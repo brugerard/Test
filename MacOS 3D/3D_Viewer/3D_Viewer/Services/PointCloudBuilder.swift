@@ -26,7 +26,20 @@ struct PointCloudData {
 
 enum PointCloudBuilder {
     /// Builds (and appends into `into`) the point cloud for one depth frame.
+    ///
+    /// Wrapped in `autoreleasepool` because RGB sampling decodes an HEIC
+    /// image per call (via Core Graphics/ImageIO, which are Objective-C
+    /// under the hood): merging hundreds of frames in one tight loop without
+    /// draining the autorelease pool between frames was measured to hold
+    /// every frame's decode temporaries alive simultaneously, pushing RSS
+    /// into the multi-gigabyte range.
     static func build(frame: DepthFrame, options: PointCloudBuildOptions, into result: inout PointCloudData) {
+        autoreleasepool {
+            buildUnpooled(frame: frame, options: options, into: &result)
+        }
+    }
+
+    private static func buildUnpooled(frame: DepthFrame, options: PointCloudBuildOptions, into result: inout PointCloudData) {
         let info = frame.info
         guard let depthData = try? Data(contentsOf: frame.binURL) else { return }
         let width = info.width
@@ -49,7 +62,10 @@ enum PointCloudBuilder {
         var rgbSampler: RGBImageSampler?
         var rgbScale: (x: Float, y: Float) = (1, 1)
         if options.colorMode == .rgb, let rgbURL = frame.rgbURL {
-            rgbSampler = RGBImageSampler(contentsOf: rgbURL)
+            // Nearest-sampling one color per depth pixel never needs more
+            // resolution than the depth map itself, so decode a thumbnail
+            // instead of the full RGB capture (see RGBImageSampler's doc).
+            rgbSampler = RGBImageSampler(contentsOf: rgbURL, maxPixelSize: max(width, height))
             if let sampler = rgbSampler {
                 rgbScale = (Float(sampler.width) / Float(width), Float(sampler.height) / Float(height))
             }
@@ -60,9 +76,16 @@ enum PointCloudBuilder {
 
         result.cameraTrajectory.append(GeometryMath.cameraPosition(info.transform))
 
+        // Deliberately no reserveCapacity here: this function is called once
+        // per frame while merging a session, and reserving only *this*
+        // frame's increment on every call pins the array's capacity right at
+        // its current size each time — defeating Swift's normal geometric
+        // over-allocation and forcing a full reallocation+copy of the
+        // (possibly many-million-element) accumulated array on almost every
+        // subsequent frame, i.e. O(n^2) total copying across a merge. Plain
+        // `append` already grows capacity geometrically and is amortized
+        // O(1) per element across the whole merge.
         let stride = max(1, options.stride)
-        result.positions.reserveCapacity(result.positions.count + (width / stride) * (height / stride))
-        result.colors.reserveCapacity(result.colors.count + (width / stride) * (height / stride))
 
         for v in Swift.stride(from: 0, to: height, by: stride) {
             for u in Swift.stride(from: 0, to: width, by: stride) {

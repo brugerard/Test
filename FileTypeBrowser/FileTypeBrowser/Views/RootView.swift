@@ -143,6 +143,13 @@ private struct SourcesView: View {
                         }
                     }
                 }
+                Section {
+                    Text("Made by Bruno Gerard")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
+                }
             }
             .navigationTitle("Sources")
             .toolbar {

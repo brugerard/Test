@@ -63,10 +63,14 @@ struct CategoryFilesView: View {
         }
         .overlay {
             if items.isEmpty {
-                ContentUnavailableView(
-                    "No \(category.displayName)",
-                    systemImage: category.systemImage
-                )
+                VStack(spacing: 12) {
+                    Image(systemName: category.systemImage)
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    Text("No \(category.displayName)")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .sheet(isPresented: previewPresented) {

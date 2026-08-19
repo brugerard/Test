@@ -11,36 +11,44 @@ enum FileScanner {
 
     static func scan(roots: [ScanRoot]) async -> [FileCategory: [FileItem]] {
         await Task.detached(priority: .userInitiated) {
-            var items: [FileItem] = []
-            let fileManager = FileManager.default
-            let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
-
-            for root in roots {
-                guard let enumerator = fileManager.enumerator(
-                    at: root.url,
-                    includingPropertiesForKeys: keys,
-                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
-                ) else { continue }
-
-                for case let fileURL as URL in enumerator {
-                    guard let values = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
-                    if values.isDirectory == true { continue }
-
-                    let category = FileCategory.classify(extension: fileURL.pathExtension)
-                    let item = FileItem(
-                        url: fileURL,
-                        name: fileURL.lastPathComponent,
-                        category: category,
-                        size: Int64(values.fileSize ?? 0),
-                        modifiedDate: values.contentModificationDate,
-                        sourceName: root.sourceName
-                    )
-                    items.append(item)
-                }
-            }
-
-            return Dictionary(grouping: items, by: { $0.category })
+            scanSync(roots: roots)
         }.value
+    }
+
+    /// Does the actual (blocking) enumeration. Kept as a plain synchronous
+    /// function and invoked from a detached task, since `FileManager`'s
+    /// `DirectoryEnumerator` sequence iteration isn't usable directly inside
+    /// an async function body.
+    private static func scanSync(roots: [ScanRoot]) -> [FileCategory: [FileItem]] {
+        var items: [FileItem] = []
+        let fileManager = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+
+        for root in roots {
+            guard let enumerator = fileManager.enumerator(
+                at: root.url,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else { continue }
+
+            for case let fileURL as URL in enumerator {
+                guard let values = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
+                if values.isDirectory == true { continue }
+
+                let category = FileCategory.classify(extension: fileURL.pathExtension)
+                let item = FileItem(
+                    url: fileURL,
+                    name: fileURL.lastPathComponent,
+                    category: category,
+                    size: Int64(values.fileSize ?? 0),
+                    modifiedDate: values.contentModificationDate,
+                    sourceName: root.sourceName
+                )
+                items.append(item)
+            }
+        }
+
+        return Dictionary(grouping: items, by: { $0.category })
     }
 
     /// The app's own sandboxed Documents folder. Because `UIFileSharingEnabled`

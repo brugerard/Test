@@ -113,7 +113,7 @@ private struct CategoryTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

@@ -17,11 +17,13 @@ struct RecordingConfiguration: Codable {
 struct SensorAvailability: Codable {
     var camera: Bool
     var lidarSceneDepth: Bool
+    var motion: Bool
 }
 
 struct FrameCounts: Codable {
     var rgbFramesWritten: Int
     var depthFramesWritten: Int
+    var motionSamplesWritten: Int
 }
 
 struct SessionMetadata: Codable {
@@ -47,6 +49,7 @@ struct SessionMetadata: Codable {
             "imagePixels": "Origin top-left, +X right, +Y down, in pixels of the saved RGB image at its captured (unrescaled) resolution.",
             "depthPixels": "Origin top-left, +X right, +Y down, in pixels of the depth map, which is a lower resolution than the RGB image. Use the depth frame's own scaled intrinsics, not the RGB frame's, to back-project depth pixels.",
             "wgs84": "Geographic latitude/longitude, decimal degrees (added in Phase 4).",
+            "deviceMotion": "Apple's standard Core Motion device frame: with the device held in portrait, screen facing the user, +X points right, +Y points toward the top of the device, +Z points out of the screen toward the user. Independent of ARKit's camera/world frames — do not mix without an explicit transform.",
         ]
     }
 
@@ -56,6 +59,9 @@ struct SessionMetadata: Codable {
             "angle": "radians",
             "pressure": "kilopascals",
             "time": "seconds",
+            "acceleration": "g (9.80665 m/s^2 per g) — Core Motion's native unit, NOT raw m/s^2",
+            "rotationRate": "radians/second",
+            "magneticField": "microtesla (uT)",
         ]
     }
 }
@@ -135,6 +141,101 @@ struct FrameCSVRow {
         fields.append(contentsOf: transform.map { String(format: "%.6f", $0) })
         fields.append(trackingState)
         fields.append(correspondingDepthFrameID.map(String.init) ?? "")
+        return fields.joined(separator: ",")
+    }
+}
+
+// MARK: - sensors/motion.csv
+
+struct MotionCSVRow {
+    let sampleID: Int
+    let sessionTimeSeconds: TimeInterval
+    let systemMonotonicTime: TimeInterval
+    let utcTimestamp: Date
+    let nativeSensorTimestamp: TimeInterval
+    /// "xMagneticNorthZVertical" or "xArbitraryZVertical" — see
+    /// `MotionSensorManager` and `SCIENTIFIC_DATA_FORMAT.md` §12 for what
+    /// this does and doesn't mean for `yaw`.
+    let attitudeReferenceFrame: String
+    /// Radians.
+    let roll: Double
+    let pitch: Double
+    let yaw: Double
+    let quaternionX: Double
+    let quaternionY: Double
+    let quaternionZ: Double
+    let quaternionW: Double
+    /// Row-major 3x3, dimensionless.
+    let rotationMatrix: [Double]
+    /// Gravity-removed acceleration, in g. Never confuse with `gravity*` below.
+    let userAccelerationX: Double
+    let userAccelerationY: Double
+    let userAccelerationZ: Double
+    /// Direction/magnitude of gravity in the device frame, in g (magnitude ≈ 1.0).
+    let gravityX: Double
+    let gravityY: Double
+    let gravityZ: Double
+    /// Radians/second.
+    let rotationRateX: Double
+    let rotationRateY: Double
+    let rotationRateZ: Double
+    /// Microtesla.
+    let magneticFieldX: Double
+    let magneticFieldY: Double
+    let magneticFieldZ: Double
+    /// "uncalibrated" / "low" / "medium" / "high" — Core Motion's own compass
+    /// calibration confidence, useful for filtering low-confidence samples.
+    let magneticFieldCalibrationAccuracy: String
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static let csvHeader = [
+        "sampleID", "sessionTimeSeconds", "systemMonotonicTime", "utcTimestamp", "nativeSensorTimestamp",
+        "attitudeReferenceFrame",
+        "roll", "pitch", "yaw",
+        "quaternionX", "quaternionY", "quaternionZ", "quaternionW",
+        "rotationMatrix_m11", "rotationMatrix_m12", "rotationMatrix_m13",
+        "rotationMatrix_m21", "rotationMatrix_m22", "rotationMatrix_m23",
+        "rotationMatrix_m31", "rotationMatrix_m32", "rotationMatrix_m33",
+        "userAccelerationX", "userAccelerationY", "userAccelerationZ",
+        "gravityX", "gravityY", "gravityZ",
+        "rotationRateX", "rotationRateY", "rotationRateZ",
+        "magneticFieldX", "magneticFieldY", "magneticFieldZ", "magneticFieldCalibrationAccuracy",
+    ].joined(separator: ",")
+
+    func csvLine() -> String {
+        var fields: [String] = []
+        fields.append(String(sampleID))
+        fields.append(String(format: "%.6f", sessionTimeSeconds))
+        fields.append(String(format: "%.6f", systemMonotonicTime))
+        fields.append(Self.isoFormatter.string(from: utcTimestamp))
+        fields.append(String(format: "%.6f", nativeSensorTimestamp))
+        fields.append(attitudeReferenceFrame)
+        fields.append(String(format: "%.6f", roll))
+        fields.append(String(format: "%.6f", pitch))
+        fields.append(String(format: "%.6f", yaw))
+        fields.append(String(format: "%.6f", quaternionX))
+        fields.append(String(format: "%.6f", quaternionY))
+        fields.append(String(format: "%.6f", quaternionZ))
+        fields.append(String(format: "%.6f", quaternionW))
+        fields.append(contentsOf: rotationMatrix.map { String(format: "%.6f", $0) })
+        fields.append(String(format: "%.6f", userAccelerationX))
+        fields.append(String(format: "%.6f", userAccelerationY))
+        fields.append(String(format: "%.6f", userAccelerationZ))
+        fields.append(String(format: "%.6f", gravityX))
+        fields.append(String(format: "%.6f", gravityY))
+        fields.append(String(format: "%.6f", gravityZ))
+        fields.append(String(format: "%.6f", rotationRateX))
+        fields.append(String(format: "%.6f", rotationRateY))
+        fields.append(String(format: "%.6f", rotationRateZ))
+        fields.append(String(format: "%.6f", magneticFieldX))
+        fields.append(String(format: "%.6f", magneticFieldY))
+        fields.append(String(format: "%.6f", magneticFieldZ))
+        fields.append(magneticFieldCalibrationAccuracy)
         return fields.joined(separator: ",")
     }
 }

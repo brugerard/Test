@@ -7,6 +7,7 @@ import SwiftUI
 /// forwards button taps.
 struct ContentView: View {
     @StateObject private var arCaptureManager = ARCaptureManager()
+    @StateObject private var motionSensorManager = MotionSensorManager()
     @StateObject private var recordingSessionManager = RecordingSessionManager()
     @Environment(\.scenePhase) private var scenePhase
     /// Chosen before starting a recording; applied to
@@ -45,13 +46,18 @@ struct ContentView: View {
             arCaptureManager.frameHandler = { [recordingSessionManager] snapshot in
                 recordingSessionManager.handle(frame: snapshot)
             }
+            motionSensorManager.sampleHandler = { [recordingSessionManager] sample in
+                recordingSessionManager.handle(motion: sample)
+            }
             arCaptureManager.start()
+            motionSensorManager.start()
         }
         .onDisappear {
             if recordingSessionManager.isRecordingPublished {
                 recordingSessionManager.stopRecording()
             }
             arCaptureManager.stop()
+            motionSensorManager.stop()
         }
         // ARKit forbids camera/GPU work while backgrounded — without this, a
         // backgrounded recording keeps trying (and failing) to encode frames
@@ -66,11 +72,15 @@ struct ContentView: View {
                 if !arCaptureManager.isSessionRunning {
                     arCaptureManager.start()
                 }
+                if !motionSensorManager.isUpdating {
+                    motionSensorManager.start()
+                }
             case .background:
                 if recordingSessionManager.isRecordingPublished {
                     recordingSessionManager.stopRecording()
                 }
                 arCaptureManager.stop()
+                motionSensorManager.stop()
             case .inactive:
                 break
             @unknown default:
@@ -85,6 +95,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             statusRow(label: "LiDAR / Scene Depth Supported", available: arCaptureManager.isLiDARAvailable)
             statusRow(label: "Scene Depth Active", available: arCaptureManager.isSceneDepthActive)
+            statusRow(label: "Motion Available", available: motionSensorManager.isMotionAvailable)
 
             Text("Tracking: \(arCaptureManager.trackingSummary.rawValue)")
             Text("AR frames received: \(arCaptureManager.frameCount)")
@@ -100,7 +111,20 @@ struct ContentView: View {
                 Text("Depth: no scene depth frame received yet")
             }
 
+            Divider().overlay(Color.white.opacity(0.3))
+
+            if let motion = motionSensorManager.latestSample {
+                Text("Roll \(formatDegrees(motion.roll))°  Pitch \(formatDegrees(motion.pitch))°  Yaw \(formatDegrees(motion.yaw))°")
+                Text("Yaw reference: \(motion.referenceFrame == .magneticNorth ? "magnetic north (uncalibrated)" : "arbitrary")")
+            } else {
+                Text("Motion: no sample received yet")
+            }
+
             if let error = arCaptureManager.lastError {
+                Text("⚠️ \(error)")
+                    .foregroundColor(.orange)
+            }
+            if let error = motionSensorManager.lastError {
                 Text("⚠️ \(error)")
                     .foregroundColor(.orange)
             }
@@ -133,6 +157,7 @@ struct ContentView: View {
             Text(String(format: "Elapsed: %.1f s", recordingSessionManager.elapsedSeconds))
             Text("RGB frames written: \(recordingSessionManager.rgbFramesWritten)")
             Text("Depth frames written: \(recordingSessionManager.depthFramesWritten)")
+            Text("Motion samples written: \(recordingSessionManager.motionSamplesWritten)")
             Text("Dropped frames: \(recordingSessionManager.droppedFrames)")
                 .foregroundColor(recordingSessionManager.droppedFrames > 0 ? .orange : .white)
             Text("Disk write errors: \(recordingSessionManager.diskWriteErrors)")
@@ -157,7 +182,10 @@ struct ContentView: View {
                 recordingSessionManager.stopRecording()
             } else {
                 recordingSessionManager.captureMode = selectedCaptureMode
-                recordingSessionManager.startRecording(lidarAvailable: arCaptureManager.isSceneDepthActive)
+                recordingSessionManager.startRecording(
+                    lidarAvailable: arCaptureManager.isSceneDepthActive,
+                    motionAvailable: motionSensorManager.isMotionAvailable
+                )
             }
         } label: {
             Text(recordingSessionManager.isRecordingPublished ? "STOP RECORDING" : "START RECORDING")
@@ -229,6 +257,12 @@ struct ContentView: View {
 
     private func format(_ value: Float) -> String {
         value.isNaN ? "n/a" : String(format: "%.2f", value)
+    }
+
+    /// Radians -> degrees, for the live status display only. Recorded files
+    /// always store radians (SCIENTIFIC_DATA_FORMAT.md §4).
+    private func formatDegrees(_ radians: Double) -> String {
+        String(format: "%.1f", radians * 180.0 / .pi)
     }
 }
 

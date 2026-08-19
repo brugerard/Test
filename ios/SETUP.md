@@ -224,9 +224,37 @@ a project by hand:
    That's expected behavior, not a bug: start a fresh recording after
    returning to the app.
 
+### Phase 3 (Core Motion)
+
+1. On first launch after this update, iOS should prompt for **Motion &
+   Fitness** permission (no dialog beforehand — Core Motion just requests it
+   the first time `startDeviceMotionUpdates` is called). Allow it.
+2. In the status panel (visible even without recording), confirm:
+   - **Motion Available**: green.
+   - A live **Roll / Pitch / Yaw** readout that changes as you tilt/rotate
+     the phone — tilt it forward/back, left/right, and spin it flat on a
+     table, and confirm each shows up in the expected angle.
+   - A **"Yaw reference: magnetic north (uncalibrated)"** line (or
+     "arbitrary" if the device doesn't support the magnetic-north frame —
+     shouldn't happen on an iPhone 14 Pro).
+3. Start a recording (either capture mode), let it run ~10 seconds, stop,
+   and confirm the health panel showed **Motion samples written** climbing
+   at roughly 50/second throughout — much faster than the RGB/depth counts.
+4. Share the session (as before) and check `sensors/motion.csv`: header row
+   present, ~500 data rows for a 10-second recording, `roll`/`pitch`/`yaw`
+   values changing smoothly frame-to-frame (not stuck or wildly jumping),
+   and `magneticFieldCalibrationAccuracy` showing `medium` or `high` after
+   the phone's been moved around a bit (compasses often start
+   `uncalibrated` and improve after a figure-8 motion — a known Core Motion
+   quirk, not a bug here).
+5. Confirm `metadata.json`'s `sensorAvailability.motion` is `true` and
+   `frameCounts.motionSamplesWritten` roughly matches the row count in
+   `motion.csv`.
+
 ## Next phase
 
-Once you've confirmed both of the above on the physical device, Phase 3
-adds Core Motion (attitude, acceleration, gyroscope, magnetometer at
-~50 Hz). Let me know how the Phase 2 test goes (and paste any Xcode
-compiler errors) and I'll proceed.
+Once you've confirmed Phases 1–3 on the physical device, Phase 4 adds Core
+Location (GPS, altitude, accuracy fields, and — building on Phase 3's
+magnetic-north-relative yaw — proper `CLHeading`-based magnetic/true
+compass heading). Let me know how the Phase 3 test goes (and paste any
+Xcode compiler errors) and I'll proceed.

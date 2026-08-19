@@ -34,6 +34,9 @@ private struct RecordingState {
     /// keeps this bounded regardless of how long the operator waits between
     /// taps.
     var latestFrameForManualCapture: ARFrameSnapshot?
+    /// Independent of `frameIndex` — motion samples are numbered on their own
+    /// sequence since they're written at a different (always-continuous) rate.
+    var motionSampleIndex = 0
 }
 
 /// Owns the lifecycle of one recording session: creating the on-disk directory
@@ -50,6 +53,7 @@ final class RecordingSessionManager: ObservableObject {
     @Published private(set) var elapsedSeconds: TimeInterval = 0
     @Published private(set) var rgbFramesWritten = 0
     @Published private(set) var depthFramesWritten = 0
+    @Published private(set) var motionSamplesWritten = 0
     @Published private(set) var droppedFrames = 0
     @Published private(set) var diskWriteErrors = 0
     @Published private(set) var lastErrorMessage: String?
@@ -83,7 +87,7 @@ final class RecordingSessionManager: ObservableObject {
     /// Returns false (with `lastErrorMessage` set) if recording could not start,
     /// e.g. insufficient disk space or a filesystem error.
     @discardableResult
-    func startRecording(lidarAvailable: Bool) -> Bool {
+    func startRecording(lidarAvailable: Bool, motionAvailable: Bool) -> Bool {
         guard !isRecording else { return false }
 
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -108,6 +112,7 @@ final class RecordingSessionManager: ObservableObject {
             .appendingPathComponent(sessionID, isDirectory: true)
 
         let framesCSVURL = sessionDirectoryURL.appendingPathComponent("sensors/frames.csv")
+        let motionCSVURL = sessionDirectoryURL.appendingPathComponent("sensors/motion.csv")
         do {
             let fm = FileManager.default
             try fm.createDirectory(at: sessionDirectoryURL.appendingPathComponent("rgb"), withIntermediateDirectories: true)
@@ -119,12 +124,14 @@ final class RecordingSessionManager: ObservableObject {
             // row — otherwise the two async writes could race and a data row
             // could land ahead of the header, corrupting the CSV.
             try (FrameCSVRow.csvHeader + "\n").write(to: framesCSVURL, atomically: true, encoding: .utf8)
+            try (MotionCSVRow.csvHeader + "\n").write(to: motionCSVURL, atomically: true, encoding: .utf8)
         } catch {
-            lastErrorMessage = "Failed to initialize session directories/frames.csv: \(error.localizedDescription)"
+            lastErrorMessage = "Failed to initialize session directories/CSV headers: \(error.localizedDescription)"
             return false
         }
 
         currentSessionLidarAvailable = lidarAvailable
+        currentSessionMotionAvailable = motionAvailable
 
         let startMonotonic = ProcessInfo.processInfo.systemUptime
         stateLock.withLock { state in
@@ -136,12 +143,14 @@ final class RecordingSessionManager: ObservableObject {
             state.frameIndex = 0
             state.lastCaptureSessionTime = -.greatestFiniteMagnitude
             state.latestFrameForManualCapture = nil
+            state.motionSampleIndex = 0
         }
 
         isRecordingPublished = true
         currentSessionID = sessionID
         rgbFramesWritten = 0
         depthFramesWritten = 0
+        motionSamplesWritten = 0
         droppedFrames = 0
         diskWriteErrors = 0
         lastErrorMessage = nil
@@ -151,7 +160,7 @@ final class RecordingSessionManager: ObservableObject {
 
         let modeLabel = captureMode == .continuous ? "continuous" : "manual"
         let configuration = RecordingConfiguration(rgbCaptureRateHz: rgbCaptureRateHz, captureMode: modeLabel)
-        let availability = SensorAvailability(camera: true, lidarSceneDepth: lidarAvailable)
+        let availability = SensorAvailability(camera: true, lidarSceneDepth: lidarAvailable, motion: motionAvailable)
         Task {
             let metadata = SessionMetadata(
                 appVersion: Self.appVersionString(),
@@ -182,6 +191,7 @@ final class RecordingSessionManager: ObservableObject {
         // @Published counters directly here is safe — no cross-thread race.
         let finalRGBCount = rgbFramesWritten
         let finalDepthCount = depthFramesWritten
+        let finalMotionCount = motionSamplesWritten
         let finalDropped = droppedFrames
         let finalErrors = diskWriteErrors
 
@@ -198,7 +208,11 @@ final class RecordingSessionManager: ObservableObject {
         guard let dirURL else { return }
         lastCompletedSessionURL = dirURL
         let endUTC = Date()
-        let lidarAvailableAtStart = SensorAvailability(camera: true, lidarSceneDepth: currentSessionLidarAvailable)
+        let availabilityAtStart = SensorAvailability(
+            camera: true,
+            lidarSceneDepth: currentSessionLidarAvailable,
+            motion: currentSessionMotionAvailable
+        )
         let modeLabel = captureMode == .continuous ? "continuous" : "manual"
 
         Task {
@@ -212,8 +226,8 @@ final class RecordingSessionManager: ObservableObject {
                 recordingConfiguration: RecordingConfiguration(rgbCaptureRateHz: rgbCaptureRateHz, captureMode: modeLabel),
                 coordinateSystems: SessionMetadata.coordinateSystemDescriptions(),
                 units: SessionMetadata.unitDescriptions(),
-                sensorAvailability: lidarAvailableAtStart,
-                frameCounts: FrameCounts(rgbFramesWritten: finalRGBCount, depthFramesWritten: finalDepthCount),
+                sensorAvailability: availabilityAtStart,
+                frameCounts: FrameCounts(rgbFramesWritten: finalRGBCount, depthFramesWritten: finalDepthCount, motionSamplesWritten: finalMotionCount),
                 droppedFrames: finalDropped,
                 diskWriteErrors: finalErrors,
                 notes: "Finalized at STOP RECORDING."
@@ -222,9 +236,11 @@ final class RecordingSessionManager: ObservableObject {
         }
     }
 
-    /// Snapshot of LiDAR availability taken at start, so `stopRecording()` can
-    /// finalize metadata without needing a live reference to ARCaptureManager.
+    /// Snapshot of LiDAR/motion availability taken at start, so
+    /// `stopRecording()` can finalize metadata without needing a live
+    /// reference to ARCaptureManager/MotionSensorManager.
     private var currentSessionLidarAvailable = false
+    private var currentSessionMotionAvailable = false
 
     // MARK: - Frame handling (ARKit background delegate queue)
 
@@ -374,6 +390,64 @@ final class RecordingSessionManager: ObservableObject {
         }
     }
 
+    // MARK: - Motion handling (Core Motion update queue)
+
+    /// Motion always records at whatever rate `MotionSensorManager` delivers
+    /// (~50 Hz) regardless of `captureMode` — unlike RGB/depth, motion
+    /// samples are cheap and the whole point is dense, continuous tracking.
+    func handle(motion sample: MotionSample) {
+        struct MotionCaptureDecision {
+            let sampleID: Int
+            let sessionTime: TimeInterval
+            let dirURL: URL
+        }
+
+        let decision: MotionCaptureDecision? = stateLock.withLock { state in
+            guard state.isRecording, let dirURL = state.sessionDirectoryURL else { return nil }
+            let sessionTime = sample.nativeTimestamp - state.sessionStartMonotonic
+            state.motionSampleIndex += 1
+            return MotionCaptureDecision(sampleID: state.motionSampleIndex, sessionTime: sessionTime, dirURL: dirURL)
+        }
+
+        guard let decision else { return }
+
+        let row = MotionCSVRow(
+            sampleID: decision.sampleID,
+            sessionTimeSeconds: decision.sessionTime,
+            systemMonotonicTime: sample.nativeTimestamp,
+            utcTimestamp: Date(),
+            nativeSensorTimestamp: sample.nativeTimestamp,
+            attitudeReferenceFrame: sample.referenceFrame.rawValue,
+            roll: sample.roll,
+            pitch: sample.pitch,
+            yaw: sample.yaw,
+            quaternionX: sample.quaternionX,
+            quaternionY: sample.quaternionY,
+            quaternionZ: sample.quaternionZ,
+            quaternionW: sample.quaternionW,
+            rotationMatrix: sample.rotationMatrix,
+            userAccelerationX: sample.userAccelerationX,
+            userAccelerationY: sample.userAccelerationY,
+            userAccelerationZ: sample.userAccelerationZ,
+            gravityX: sample.gravityX,
+            gravityY: sample.gravityY,
+            gravityZ: sample.gravityZ,
+            rotationRateX: sample.rotationRateX,
+            rotationRateY: sample.rotationRateY,
+            rotationRateZ: sample.rotationRateZ,
+            magneticFieldX: sample.magneticFieldX,
+            magneticFieldY: sample.magneticFieldY,
+            magneticFieldZ: sample.magneticFieldZ,
+            magneticFieldCalibrationAccuracy: sample.magneticFieldCalibrationAccuracy
+        )
+        let motionCSVURL = decision.dirURL.appendingPathComponent("sensors/motion.csv")
+
+        Task {
+            let outcome = await dataWriter.appendCSVLine(row.csvLine(), to: motionCSVURL)
+            recordMotionOutcome(outcome)
+        }
+    }
+
     // MARK: - Counter updates (always hopped to main thread)
 
     private func recordRGBOutcome(_ outcome: DataWriter.WriteOutcome) {
@@ -398,6 +472,19 @@ final class RecordingSessionManager: ObservableObject {
             } else {
                 self.diskWriteErrors += 1
                 self.lastErrorMessage = binOutcome.error ?? jsonOutcome.error
+            }
+        }
+    }
+
+    private func recordMotionOutcome(_ outcome: DataWriter.WriteOutcome) {
+        DispatchQueue.main.async {
+            if outcome.succeeded {
+                self.motionSamplesWritten += 1
+            } else if outcome.dropped {
+                self.droppedFrames += 1
+            } else {
+                self.diskWriteErrors += 1
+                self.lastErrorMessage = outcome.error
             }
         }
     }

@@ -4,10 +4,10 @@ This document describes the on-disk data format produced by the BG_Sensing
 iOS app, so that a researcher who receives only an exported recording session
 plus this document can interpret the dataset correctly without the app.
 
-**Status: Phase 2.** RGB + LiDAR depth recording is implemented. Motion, GPS,
-barometer, and export/zip land in later phases (see `SETUP.md`) and this
-document will grow accordingly. Sections are marked `[Phase N]` to show when
-they became accurate.
+**Status: Phase 3.** RGB + LiDAR depth recording and Core Motion are
+implemented. GPS, barometer, and export/zip land in later phases (see
+`SETUP.md`) and this document will grow accordingly. Sections are marked
+`[Phase N]` to show when they became accurate.
 
 ## 1. Overview
 
@@ -39,7 +39,7 @@ Session_2026-08-19_11-45-32_a1b2c3d4/
 
     sensors/
         frames.csv                   (per RGB/depth frame-pair metadata)
-        motion.csv                   (Phase 3)
+        motion.csv                   (Core Motion, ~50 Hz — Section 12)
         location.csv                 (Phase 4)
         altimeter.csv                (Phase 5)
 ```
@@ -62,7 +62,7 @@ interchangeable and must not be confused:
 | **ARKit camera coordinates** | Right-handed, camera-relative: +X right, +Y up, +Z out of the screen toward the user (i.e. the camera looks down -Z). The camera transform (Section 5) maps camera coordinates into world coordinates. | meters |
 | **Image pixel coordinates** | Origin top-left, +X right, +Y down, in pixels of the captured RGB image at its *captured*, unrescaled resolution. See Section 7 on orientation. | pixels |
 | **Depth-map coordinates** | Origin top-left, +X right, +Y down, in pixels of the depth map, which is a lower resolution than the RGB image (typically 256x192 on iPhone 14 Pro). Use each depth frame's own *scaled* intrinsics (Section 6), never the RGB frame's. | pixels |
-| **Device coordinates** | Core Motion's reference frame for attitude/acceleration/rotation, relative to the device casing, not the camera. Documented in full in Phase 3. | — |
+| **Device coordinates** | Core Motion's reference frame for attitude/acceleration/rotation, relative to the device casing, not the camera. See Section 12.1. | — |
 | **Geographic WGS84** | Latitude/longitude from Core Location. | decimal degrees |
 | **Mean-sea-level (MSL) altitude** | GPS-derived altitude as reported by Core Location (`CLLocation.altitude`), which on iOS is referenced to mean sea level, not the WGS84 ellipsoid. | meters |
 | **WGS84 ellipsoidal altitude** | Height above the WGS84 ellipsoid, if/when exposed distinctly from MSL altitude. Documented fully in Phase 4 once implemented. | meters |
@@ -245,11 +245,13 @@ field has already been scaled (`fx' = fx * depthWidth/imageWidth`, `cx' = cx
 so it can be used directly with that depth map's own pixel coordinates
 (Section 3.1's worked example).
 
-## 8. Units and missing-data convention `[Phase 1, unchanged]`
+## 8. Units and missing-data convention `[Phase 1; units list extended in Phase 3]`
 
 - Distances/altitudes: meters. Angles: radians unless noted. Pressure:
   kilopascals (`CMAltimeter`/`CMAltitudeData` native unit). Accuracy fields:
-  same unit as the value they describe.
+  same unit as the value they describe. Acceleration (`userAcceleration`,
+  `gravity`): **g** (9.80665 m/s² per g), Core Motion's native unit — not
+  raw m/s². Rotation rate: radians/second. Magnetic field: microtesla (µT).
 - A sensor that is unavailable, denied, or produced no reading for a given
   moment is represented by an explicit missing-data marker (`null` in JSON,
   empty field in CSV, or `NaN` for floating-point values that must remain
@@ -272,8 +274,8 @@ again — overwriting the first — when recording stops, with final counts.
 | `recordingConfiguration` | `{rgbFormat, rgbCaptureRateHz, captureMode, depthFormat, depthType, confidenceFormat}` — `captureMode` is `"continuous"` or `"manual"` (Section 11.1); `rgbCaptureRateHz` is meaningless for a `"manual"` session (frames are irregular, operator-triggered) |
 | `coordinateSystems` | Human-readable description of each coordinate system in use (Section 3), embedded so the dataset is self-describing even without this file |
 | `units` | Same idea, for units (Section 8) |
-| `sensorAvailability` | `{camera, lidarSceneDepth}` as booleans — booleans for motion/location/barometer arrive with those phases |
-| `frameCounts` | `{rgbFramesWritten, depthFramesWritten}` — `null` in the start-of-session copy |
+| `sensorAvailability` | `{camera, lidarSceneDepth, motion}` as booleans — booleans for location/barometer arrive with those phases |
+| `frameCounts` | `{rgbFramesWritten, depthFramesWritten, motionSamplesWritten}` — `null` in the start-of-session copy |
 | `droppedFrames` | Count of frames skipped due to write backpressure (disk couldn't keep up) — `null` in the start-of-session copy |
 | `diskWriteErrors` | Count of write failures (not backpressure — actual I/O errors) — `null` in the start-of-session copy |
 | `notes` | Free text, currently used to flag which copy (start vs. final) this is |
@@ -300,6 +302,17 @@ error message is shown in the recording health panel.
   throttled by comparing each AR frame's `sessionTimeSeconds` to the last
   captured frame's. Depth is captured in lockstep with RGB (same `ARFrame`),
   not on an independent schedule — see Section 2.
+- All disk I/O (HEIC encode, raw binary writes, JSON, CSV append) happens on
+  a dedicated `DataWriter` actor, off both the main thread and ARKit's
+  delegate callback thread, so recording never blocks the UI or frame
+  acquisition.
+- Cross-thread recording state (is-recording flag, frame counter, session
+  start time) is protected by `OSAllocatedUnfairLock`, since it's written
+  from the main thread (Start/Stop buttons) and read/written from ARKit's
+  background delegate queue (every frame).
+- `sensors/frames.csv`'s header line is written synchronously (not via the
+  async `DataWriter`) before recording is allowed to start, to guarantee it
+  can never race with — and land after — the first data row.
 
 ### 11.1 Capture mode: Continuous vs. Manual
 
@@ -325,14 +338,69 @@ scene are nearly identical, which shows up as streaky, doubled geometry when
 multiple frames' point clouds are merged — see `../macos/BG_Viewer`).
 Deliberate stand-still-and-tap capture — closer to traditional photogrammetry
 workflow — trades data density for per-frame sharpness and reduced redundancy.
-- All disk I/O (HEIC encode, raw binary writes, JSON, CSV append) happens on
-  a dedicated `DataWriter` actor, off both the main thread and ARKit's
-  delegate callback thread, so recording never blocks the UI or frame
-  acquisition.
-- Cross-thread recording state (is-recording flag, frame counter, session
-  start time) is protected by `OSAllocatedUnfairLock`, since it's written
-  from the main thread (Start/Stop buttons) and read/written from ARKit's
-  background delegate queue (every frame).
-- `sensors/frames.csv`'s header line is written synchronously (not via the
-  async `DataWriter`) before recording is allowed to start, to guarantee it
-  can never race with — and land after — the first data row.
+
+**Motion (Section 12) always records continuously at ~50 Hz regardless of
+`captureMode`** — the mode setting only governs RGB/depth. Motion samples are
+cheap (a CSV row, no image encode) and dense continuous tracking is the whole
+point, so there's no motion equivalent of "manual" capture.
+
+## 12. Motion (`sensors/motion.csv`) `[Phase 3]`
+
+Core Motion device-motion samples at a target rate of 50 Hz
+(`CMMotionManager.deviceMotionUpdateInterval = 1/50`; actual delivered rate
+depends on device load). Recorded continuously whenever a recording is
+active — see 11.1. Unlike RGB/depth, motion has no frame-pairing with
+anything else; each row is independent.
+
+### 12.1 Device coordinate system
+
+Core Motion's own frame, **distinct from ARKit's world/camera frames**
+(Section 3) — do not mix the two without an explicit transform. With the
+device held in portrait, screen facing the user: **+X points right, +Y
+points toward the top of the device, +Z points out of the screen toward the
+user.** This is Apple's standard convention across `CMAttitude`,
+`CMAcceleration`, `CMRotationRate`, and `CMMagneticField` alike.
+
+### 12.2 `motion.csv` columns
+
+| Column | Meaning |
+|---|---|
+| `sampleID` | 1-based, independent sequence from `frameID` (Section 6) |
+| `sessionTimeSeconds`, `systemMonotonicTime`, `utcTimestamp`, `nativeSensorTimestamp` | See Section 4 — same boot-relative domain as AR frames, so motion and RGB/depth timestamps are directly comparable with no cross-domain conversion |
+| `attitudeReferenceFrame` | `"xMagneticNorthZVertical"` or `"xArbitraryZVertical"` — see 12.3 |
+| `roll`, `pitch`, `yaw` | Radians. Device attitude (Euler angles) in the reference frame above |
+| `quaternionX/Y/Z/W` | Same attitude as a unit quaternion — prefer this over roll/pitch/yaw for composing rotations (no gimbal lock) |
+| `rotationMatrix_m11`..`m33` | Same attitude again, as a row-major 3x3 rotation matrix, dimensionless |
+| `userAccelerationX/Y/Z` | Gravity-**removed** acceleration from device motion, in **g** (not m/s²) |
+| `gravityX/Y/Z` | Direction of gravity in the device frame, in g (magnitude ≈ 1.0) |
+| `rotationRateX/Y/Z` | Gyroscope, radians/second |
+| `magneticFieldX/Y/Z` | Magnetometer, **microtesla (µT)** |
+| `magneticFieldCalibrationAccuracy` | `"uncalibrated"` / `"low"` / `"medium"` / `"high"` — Core Motion's own compass calibration confidence; filter or flag low-confidence samples accordingly |
+
+**Never mix `userAcceleration` and `gravity`** — they are the gravity-corrected
+and gravity-only decomposition of the same physical acceleration
+respectively, not raw combined accelerometer output. There is no separate
+"raw accelerometer" column: `CMDeviceMotion` (used here, not the lower-level
+`CMAccelerometerData`) only exposes this decomposed pair, which is the more
+scientifically useful form Apple's own sensor fusion produces.
+
+### 12.3 Attitude reference frame — and why heading isn't here yet
+
+`attitudeReferenceFrame` is `"xMagneticNorthZVertical"` when the device
+supports it (checked via `CMMotionManager.availableAttitudeReferenceFrames()`
+at recording start), falling back to `"xArbitraryZVertical"` — arbitrary,
+not tied to any compass direction — if not.
+
+**This is not the same as a compass heading**, and is intentionally not as
+precise as one:
+- It is **uncalibrated for magnetic declination** (the offset between
+  magnetic north and true/geographic north, which varies by location).
+- It comes from Core Motion directly, not `CLHeading` — because getting
+  `CLHeading` (with its explicit accuracy figure, and true-vs-magnetic
+  heading both available) requires Core *Location* permission, which this
+  app deliberately doesn't request until Phase 4, to keep Phase 3 scoped to
+  Core Motion only.
+
+When Phase 4 adds `CLHeading`-based magnetic/true heading with an accuracy
+figure, treat that as the authoritative compass reading; `yaw` here is a
+directionally-useful but coarser proxy, not a replacement.

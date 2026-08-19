@@ -58,6 +58,7 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: "This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection."
+        NSMotionUsageDescription: "This app uses device motion sensors (attitude, acceleration, gyroscope, magnetometer) for scientific data collection during recording sessions."
         # Makes recorded sessions (in the app's Documents/Sessions folder)
         # browsable from a Mac via Finder (device > BG_Sensing) and from the
         # Files app on the phone, without needing the Phase 7 export/share

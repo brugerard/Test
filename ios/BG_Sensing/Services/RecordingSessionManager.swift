@@ -200,7 +200,10 @@ final class RecordingSessionManager: ObservableObject {
                 diskWriteErrors: nil,
                 notes: "Written at session start; overwritten with final counts when the session stops. If the app terminates mid-recording, this start-of-session copy — plus whatever frames were already written — still survives."
             )
-            await dataWriter.writeJSON(metadata, to: sessionDirectoryURL.appendingPathComponent("metadata.json"))
+            let outcome = await dataWriter.writeJSON(metadata, to: sessionDirectoryURL.appendingPathComponent("metadata.json"))
+            if !outcome.succeeded {
+                recordDiskError(outcome.error ?? "Failed to write start-of-session metadata.json")
+            }
         }
 
         return true
@@ -264,7 +267,10 @@ final class RecordingSessionManager: ObservableObject {
                 diskWriteErrors: finalErrors,
                 notes: "Finalized at STOP RECORDING."
             )
-            await dataWriter.writeJSON(metadata, to: dirURL.appendingPathComponent("metadata.json"))
+            let outcome = await dataWriter.writeJSON(metadata, to: dirURL.appendingPathComponent("metadata.json"))
+            if !outcome.succeeded {
+                recordDiskError(outcome.error ?? "Failed to write final metadata.json")
+            }
         }
     }
 

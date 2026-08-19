@@ -71,18 +71,30 @@ interchangeable and must not be confused:
 GPS altitude and barometric altitude are always stored as separate fields.
 They are never combined or used to correct one another.
 
-### 3.1 Depth pixel → 3-D point (worked example) `[Phase 2]`
+### 3.1 Depth pixel → 3-D point (worked example) `[Phase 2, corrected]`
 
 Given a depth-map pixel `(u, v)` from `depth_NNNNNN.bin`, with depth value
 `d` (meters) at that pixel, and the *depth frame's own* `intrinsics` array
 from `depth_NNNNNN.json` (row-major 3x3: `[fx, 0, cx, 0, fy, cy, 0, 0, 1]`),
-back-project to a point in ARKit camera coordinates using the pinhole model:
+back-project to a point in ARKit camera coordinates:
 
 ```
-x_cam = (u - cx) * d / fx
-y_cam = (v - cy) * d / fy
-z_cam = d
+x_cam =  (u - cx) * d / fx
+y_cam = -(v - cy) * d / fy
+z_cam = -d
 ```
+
+**The Y and Z signs matter and are easy to get backwards** (an earlier
+version of this document had them wrong: `z_cam = d`, no sign flips). The
+naive pinhole formula (`x=(u-cx)d/fx, y=(v-cy)d/fy, z=d`) assumes a
+computer-vision-style camera space where +Y is down and +Z points into the
+scene. ARKit's camera space (Section 2) is different: +Y is **up** and the
+camera looks down **-Z** — the same convention SceneKit's own cameras use,
+which is exactly why ARKit's `camera.transform` can be dropped straight
+onto a SceneKit camera node (as `ARSCNView` does) and just work. Converting
+from the image-plane back-projection into that convention means flipping Y
+(image rows go down, world Y goes up) and flipping Z (a positive depth
+means "in front of the camera," i.e. the -Z direction).
 
 Then transform into ARKit world coordinates using the same JSON file's
 `transform` array (row-major 4x4, Section 5) — treat `[x_cam, y_cam, z_cam, 1]`

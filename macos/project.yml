@@ -1,0 +1,44 @@
+name: BG_Viewer
+
+options:
+  bundleIdPrefix: com.brugerard
+  deploymentTarget:
+    macOS: "13.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  BG_Viewer:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: BG_Viewer
+    settings:
+      base:
+        PRODUCT_NAME: BG_Viewer
+        PRODUCT_BUNDLE_IDENTIFIER: com.brugerard.bgviewer
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    # Same info.properties approach the iOS project settled on (see
+    # ../ios/project.yml's comment) — one mechanism, no surprises.
+    # No App Sandbox / entitlements: this is a personal analysis tool run
+    # locally, not something distributed via the App Store, so plain
+    # NSOpenPanel file access without sandbox entitlement plumbing is the
+    # simplest correct choice here.
+    info:
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    scheme:
+      testTargets: []
+      gatherCoverageData: false

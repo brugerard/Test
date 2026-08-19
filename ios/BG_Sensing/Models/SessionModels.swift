@@ -95,8 +95,6 @@ struct FrameCSVRow {
     let intrinsics: [Float]
     /// Row-major 4x4 ARKit world<-camera transform.
     let transform: [Float]
-    let exposureDuration: TimeInterval
-    let exposureOffset: Float
     let trackingState: String
     let correspondingDepthFrameID: Int?
 
@@ -116,7 +114,7 @@ struct FrameCSVRow {
         "transform_m21", "transform_m22", "transform_m23", "transform_m24",
         "transform_m31", "transform_m32", "transform_m33", "transform_m34",
         "transform_m41", "transform_m42", "transform_m43", "transform_m44",
-        "exposureDuration", "exposureOffset", "trackingState", "correspondingDepthFrameID",
+        "trackingState", "correspondingDepthFrameID",
     ].joined(separator: ",")
 
     func csvLine() -> String {
@@ -131,8 +129,6 @@ struct FrameCSVRow {
         fields.append(orientation)
         fields.append(contentsOf: intrinsics.map { String(format: "%.6f", $0) })
         fields.append(contentsOf: transform.map { String(format: "%.6f", $0) })
-        fields.append(String(format: "%.6f", exposureDuration))
-        fields.append(String(format: "%.6f", exposureOffset))
         fields.append(trackingState)
         fields.append(correspondingDepthFrameID.map(String.init) ?? "")
         return fields.joined(separator: ",")

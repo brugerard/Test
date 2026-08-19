@@ -42,8 +42,6 @@ struct ARFrameSnapshot: @unchecked Sendable {
     let intrinsics: simd_float3x3
     let cameraTransform: simd_float4x4
     let trackingSummary: ARTrackingSummary
-    let exposureDuration: TimeInterval
-    let exposureOffset: Float
     let depthMap: CVPixelBuffer?
     let confidenceMap: CVPixelBuffer?
     let depthWidth: Int
@@ -152,8 +150,6 @@ extension ARCaptureManager: ARSessionDelegate {
                     intrinsics: frame.camera.intrinsics,
                     cameraTransform: frame.camera.transform,
                     trackingSummary: tracking,
-                    exposureDuration: frame.exposureDuration,
-                    exposureOffset: frame.exposureOffset,
                     depthMap: depthMap,
                     confidenceMap: confidenceMap,
                     depthWidth: depthMap.map(CVPixelBufferGetWidth) ?? 0,

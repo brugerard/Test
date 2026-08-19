@@ -241,8 +241,6 @@ final class RecordingSessionManager: ObservableObject {
             orientation: "landscapeRight_rawSensor_unrotated",
             intrinsics: intrinsicsRowMajor,
             transform: transformRowMajor,
-            exposureDuration: frame.exposureDuration,
-            exposureOffset: frame.exposureOffset,
             trackingState: frame.trackingSummary.rawValue,
             correspondingDepthFrameID: hasDepth ? decision.frameIndex : nil
         )

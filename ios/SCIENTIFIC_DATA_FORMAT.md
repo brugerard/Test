@@ -171,10 +171,17 @@ from the same `ARFrame`.
 | `orientation` | Always `landscapeRight_rawSensor_unrotated` currently — see below |
 | `intrinsics_m11`..`intrinsics_m33` | Row-major 3x3, **at the RGB image's own resolution** — do not use on depth pixels (Section 3.1) |
 | `transform_m11`..`transform_m44` | Row-major 4x4 ARKit world<-camera transform (Section 5) |
-| `exposureDuration` | Seconds (`ARFrame.exposureDuration`) |
-| `exposureOffset` | EV units relative to the frame's target exposure (`ARFrame.exposureOffset`); not ISO — ARKit's frame API doesn't expose ISO directly |
 | `trackingState` | ARKit tracking state at capture (`Normal`, `Limited (...)`, etc.) — treat frames captured while not `Normal` with caution for pose-dependent analysis |
 | `correspondingDepthFrameID` | Same as `frameID` when a depth frame was captured alongside; empty if scene depth was momentarily unavailable for that frame |
+
+**Exposure metadata is not recorded.** The spec asked for exposure-related
+metadata "where reasonably available" — it isn't: ARKit's public `ARFrame`
+API does not expose exposure duration, EV offset, or ISO (an earlier version
+of this code assumed `ARFrame.exposureDuration`/`.exposureOffset` existed;
+they don't — this was caught by a real compiler error, not by inspection).
+The underlying `AVCaptureDevice` that owns real exposure/ISO values isn't
+accessible while ARKit's session owns the camera. Rather than fabricate
+placeholder columns, they're omitted entirely.
 
 **Orientation caveat**: ARKit delivers `capturedImage` in the camera's native
 landscape sensor orientation and does **not** rotate it to match the app's

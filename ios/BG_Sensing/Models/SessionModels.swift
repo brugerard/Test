@@ -18,12 +18,16 @@ struct SensorAvailability: Codable {
     var camera: Bool
     var lidarSceneDepth: Bool
     var motion: Bool
+    var location: Bool
+    var heading: Bool
 }
 
 struct FrameCounts: Codable {
     var rgbFramesWritten: Int
     var depthFramesWritten: Int
     var motionSamplesWritten: Int
+    var locationSamplesWritten: Int
+    var headingSamplesWritten: Int
 }
 
 struct SessionMetadata: Codable {
@@ -48,20 +52,23 @@ struct SessionMetadata: Codable {
             "arKitCamera": "Right-handed, camera-relative: +X right, +Y up, +Z out of the screen toward the user (camera looks down -Z). The per-frame 4x4 transform maps camera coordinates to arKitWorld coordinates.",
             "imagePixels": "Origin top-left, +X right, +Y down, in pixels of the saved RGB image at its captured (unrescaled) resolution.",
             "depthPixels": "Origin top-left, +X right, +Y down, in pixels of the depth map, which is a lower resolution than the RGB image. Use the depth frame's own scaled intrinsics, not the RGB frame's, to back-project depth pixels.",
-            "wgs84": "Geographic latitude/longitude, decimal degrees (added in Phase 4).",
+            "wgs84": "Geographic latitude/longitude (decimal degrees) from Core Location. altitude is mean-sea-level; ellipsoidalAltitude (when available) is height above the WGS84 ellipsoid — these are NOT the same reference and are never combined.",
             "deviceMotion": "Apple's standard Core Motion device frame: with the device held in portrait, screen facing the user, +X points right, +Y points toward the top of the device, +Z points out of the screen toward the user. Independent of ARKit's camera/world frames — do not mix without an explicit transform.",
+            "heading": "magneticHeading/trueHeading are compass bearings in degrees, 0 = north, increasing clockwise (east=90, south=180, west=270). trueHeading is corrected for magnetic declination using the current location; magneticHeading is not. A negative value for either means invalid, per CLHeading's own convention.",
         ]
     }
 
     static func unitDescriptions() -> [String: String] {
         [
             "distance": "meters",
-            "angle": "radians",
+            "angle": "radians (except GPS latitude/longitude and compass heading, which are decimal degrees — see coordinateSystems.wgs84/heading)",
             "pressure": "kilopascals",
             "time": "seconds",
             "acceleration": "g (9.80665 m/s^2 per g) — Core Motion's native unit, NOT raw m/s^2",
             "rotationRate": "radians/second",
             "magneticField": "microtesla (uT)",
+            "speed": "meters/second",
+            "gpsAccuracy": "meters (horizontal/vertical), meters/second (speed), degrees (course) — negative means invalid, per CLLocation's own convention; never discarded, always recorded as-is",
         ]
     }
 }
@@ -236,6 +243,116 @@ struct MotionCSVRow {
         fields.append(String(format: "%.6f", magneticFieldY))
         fields.append(String(format: "%.6f", magneticFieldZ))
         fields.append(magneticFieldCalibrationAccuracy)
+        return fields.joined(separator: ",")
+    }
+}
+
+// MARK: - sensors/location.csv
+
+struct LocationCSVRow {
+    let sampleID: Int
+    let sessionTimeSeconds: TimeInterval
+    let systemMonotonicTime: TimeInterval
+    /// Wall-clock at the instant the app's delegate callback received this
+    /// fix — NOT necessarily when GPS computed it. Compare with
+    /// `nativeLocationTimestampUTC`.
+    let utcTimestamp: Date
+    /// `CLLocation`'s own timestamp: when the fix was actually computed.
+    /// Can lag `utcTimestamp` by the GPS computation/delivery latency.
+    let nativeLocationTimestampUTC: Date
+    let latitude: Double
+    let longitude: Double
+    /// Meters, mean sea level.
+    let altitude: Double
+    /// Meters, WGS84 ellipsoid. Empty field if unavailable.
+    let ellipsoidalAltitude: Double?
+    /// Meters. Negative = invalid (CLLocation convention) — never discarded.
+    let horizontalAccuracy: Double
+    let verticalAccuracy: Double
+    /// Meters/second. Negative = invalid.
+    let speed: Double
+    let speedAccuracy: Double
+    /// Degrees from true north, 0..<360. Negative = invalid.
+    let course: Double
+    let courseAccuracy: Double
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static let csvHeader = [
+        "sampleID", "sessionTimeSeconds", "systemMonotonicTime", "utcTimestamp", "nativeLocationTimestampUTC",
+        "latitude", "longitude", "altitude", "ellipsoidalAltitude",
+        "horizontalAccuracy", "verticalAccuracy",
+        "speed", "speedAccuracy", "course", "courseAccuracy",
+    ].joined(separator: ",")
+
+    func csvLine() -> String {
+        var fields: [String] = []
+        fields.append(String(sampleID))
+        fields.append(String(format: "%.6f", sessionTimeSeconds))
+        fields.append(String(format: "%.6f", systemMonotonicTime))
+        fields.append(Self.isoFormatter.string(from: utcTimestamp))
+        fields.append(Self.isoFormatter.string(from: nativeLocationTimestampUTC))
+        fields.append(String(format: "%.8f", latitude))
+        fields.append(String(format: "%.8f", longitude))
+        fields.append(String(format: "%.3f", altitude))
+        fields.append(ellipsoidalAltitude.map { String(format: "%.3f", $0) } ?? "")
+        fields.append(String(format: "%.3f", horizontalAccuracy))
+        fields.append(String(format: "%.3f", verticalAccuracy))
+        fields.append(String(format: "%.3f", speed))
+        fields.append(String(format: "%.3f", speedAccuracy))
+        fields.append(String(format: "%.3f", course))
+        fields.append(String(format: "%.3f", courseAccuracy))
+        return fields.joined(separator: ",")
+    }
+}
+
+// MARK: - sensors/heading.csv
+//
+// A separate file from location.csv rather than shared columns: heading and
+// location arrive as independent, asynchronously-rated updates from
+// CLLocationManager (not one-to-one), so combining them would mean either
+// duplicating rows or leaving many columns empty per row.
+
+struct HeadingCSVRow {
+    let sampleID: Int
+    let sessionTimeSeconds: TimeInterval
+    let systemMonotonicTime: TimeInterval
+    let utcTimestamp: Date
+    /// `CLHeading`'s own timestamp.
+    let nativeHeadingTimestampUTC: Date
+    /// Degrees, 0..<360. Negative = invalid.
+    let magneticHeading: Double
+    /// Degrees, 0..<360, corrected for magnetic declination. Negative =
+    /// invalid — commonly the case before the first location fix arrives,
+    /// since true heading needs a location to compute declination.
+    let trueHeading: Double
+    let headingAccuracy: Double
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static let csvHeader = [
+        "sampleID", "sessionTimeSeconds", "systemMonotonicTime", "utcTimestamp", "nativeHeadingTimestampUTC",
+        "magneticHeading", "trueHeading", "headingAccuracy",
+    ].joined(separator: ",")
+
+    func csvLine() -> String {
+        var fields: [String] = []
+        fields.append(String(sampleID))
+        fields.append(String(format: "%.6f", sessionTimeSeconds))
+        fields.append(String(format: "%.6f", systemMonotonicTime))
+        fields.append(Self.isoFormatter.string(from: utcTimestamp))
+        fields.append(Self.isoFormatter.string(from: nativeHeadingTimestampUTC))
+        fields.append(String(format: "%.3f", magneticHeading))
+        fields.append(String(format: "%.3f", trueHeading))
+        fields.append(String(format: "%.3f", headingAccuracy))
         return fields.joined(separator: ",")
     }
 }

@@ -251,10 +251,52 @@ a project by hand:
    `frameCounts.motionSamplesWritten` roughly matches the row count in
    `motion.csv`.
 
+### Phase 4 (Core Location: GPS + heading)
+
+**Go outdoors, or at least near a window, for a meaningful test** — GPS
+fixes indoors are often slow to arrive or low-accuracy, which isn't a bug,
+just physics.
+
+1. On first launch after this update, iOS should prompt for **location
+   access "While Using the App"**. Allow it.
+2. In the status panel, confirm:
+   - **Location Available**: green once authorized (may briefly show red
+     immediately after granting permission — that's authorization state
+     catching up, not a bug).
+   - **"GPS auth: Authorized"**.
+   - A live **Lat/Lon** and **Alt (MSL) / horizontal accuracy** readout
+     that appears once the first fix arrives (can take a few seconds to a
+     minute depending on GPS conditions) and updates as you move.
+   - A **Heading: mag ... true ...** line — `true` may briefly not appear
+     or look odd before the first GPS fix arrives (true heading needs a
+     location to correct for magnetic declination — expected).
+3. Start a recording, move around outdoors for ~30 seconds (walking a short
+   loop is ideal — gives you changing lat/lon to sanity-check), stop.
+4. Confirm the health panel showed **GPS samples written** and **Heading
+   samples written** both climbing during the recording (heading typically
+   faster than GPS).
+5. Share the session and check:
+   - `sensors/location.csv`: header + data rows, latitude/longitude values
+     that look like your actual location, `horizontalAccuracy` a small
+     positive number outdoors (tens of meters or better; can be much worse
+     or briefly negative/invalid indoors — that's expected, not a bug).
+   - `sensors/heading.csv`: header + data rows, `magneticHeading`/
+     `trueHeading` changing if you turned around during the walk.
+   - `metadata.json`: `sensorAvailability.location` and `.heading` both
+     `true`, and `frameCounts.locationSamplesWritten`/
+     `.headingSamplesWritten` roughly matching the row counts in their CSVs.
+6. **Permission-denied path**: if you want to verify graceful degradation,
+   deny location access (Settings → Privacy → Location Services →
+   BG_Sensing → Never) and relaunch — the status panel should show
+   **"GPS auth: Denied"** with a visible error message, recording should
+   still work fine for RGB/depth/motion, and `sensorAvailability.location`/
+   `.heading` should be `false` in that session's `metadata.json` — nothing
+   should crash or silently pretend GPS data exists.
+
 ## Next phase
 
-Once you've confirmed Phases 1–3 on the physical device, Phase 4 adds Core
-Location (GPS, altitude, accuracy fields, and — building on Phase 3's
-magnetic-north-relative yaw — proper `CLHeading`-based magnetic/true
-compass heading). Let me know how the Phase 3 test goes (and paste any
-Xcode compiler errors) and I'll proceed.
+Once you've confirmed Phases 1–4 on the physical device, Phase 5 adds the
+barometer (`CMAltimeter`: pressure and relative altitude, kept strictly
+separate from GPS altitude — see `SCIENTIFIC_DATA_FORMAT.md` §3). Let me
+know how the Phase 4 test goes (and paste any Xcode compiler errors) and
+I'll proceed.

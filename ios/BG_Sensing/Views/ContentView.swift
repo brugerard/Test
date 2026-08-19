@@ -8,6 +8,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var arCaptureManager = ARCaptureManager()
     @StateObject private var motionSensorManager = MotionSensorManager()
+    @StateObject private var locationManager = LocationManager()
     @StateObject private var recordingSessionManager = RecordingSessionManager()
     @Environment(\.scenePhase) private var scenePhase
     /// Chosen before starting a recording; applied to
@@ -49,8 +50,15 @@ struct ContentView: View {
             motionSensorManager.sampleHandler = { [recordingSessionManager] sample in
                 recordingSessionManager.handle(motion: sample)
             }
+            locationManager.locationHandler = { [recordingSessionManager] sample in
+                recordingSessionManager.handle(location: sample)
+            }
+            locationManager.headingHandler = { [recordingSessionManager] sample in
+                recordingSessionManager.handle(heading: sample)
+            }
             arCaptureManager.start()
             motionSensorManager.start()
+            locationManager.start()
         }
         .onDisappear {
             if recordingSessionManager.isRecordingPublished {
@@ -58,6 +66,7 @@ struct ContentView: View {
             }
             arCaptureManager.stop()
             motionSensorManager.stop()
+            locationManager.stop()
         }
         // ARKit forbids camera/GPU work while backgrounded — without this, a
         // backgrounded recording keeps trying (and failing) to encode frames
@@ -75,12 +84,16 @@ struct ContentView: View {
                 if !motionSensorManager.isUpdating {
                     motionSensorManager.start()
                 }
+                if !locationManager.isUpdating {
+                    locationManager.start()
+                }
             case .background:
                 if recordingSessionManager.isRecordingPublished {
                     recordingSessionManager.stopRecording()
                 }
                 arCaptureManager.stop()
                 motionSensorManager.stop()
+                locationManager.stop()
             case .inactive:
                 break
             @unknown default:
@@ -96,6 +109,7 @@ struct ContentView: View {
             statusRow(label: "LiDAR / Scene Depth Supported", available: arCaptureManager.isLiDARAvailable)
             statusRow(label: "Scene Depth Active", available: arCaptureManager.isSceneDepthActive)
             statusRow(label: "Motion Available", available: motionSensorManager.isMotionAvailable)
+            statusRow(label: "Location Available", available: locationManager.authorizationSummary == .authorized && locationManager.isLocationServicesEnabled)
 
             Text("Tracking: \(arCaptureManager.trackingSummary.rawValue)")
             Text("AR frames received: \(arCaptureManager.frameCount)")
@@ -120,11 +134,28 @@ struct ContentView: View {
                 Text("Motion: no sample received yet")
             }
 
+            Divider().overlay(Color.white.opacity(0.3))
+
+            Text("GPS auth: \(locationManager.authorizationSummary.rawValue)")
+            if let location = locationManager.latestLocation {
+                Text("Lat \(String(format: "%.6f", location.latitude))  Lon \(String(format: "%.6f", location.longitude))")
+                Text("Alt (MSL) \(String(format: "%.1f", location.altitude)) m  ±\(String(format: "%.1f", location.horizontalAccuracy)) m horiz")
+            } else {
+                Text("GPS: no fix yet")
+            }
+            if let heading = locationManager.latestHeading {
+                Text("Heading: mag \(String(format: "%.0f", heading.magneticHeading))°  true \(String(format: "%.0f", heading.trueHeading))°")
+            }
+
             if let error = arCaptureManager.lastError {
                 Text("⚠️ \(error)")
                     .foregroundColor(.orange)
             }
             if let error = motionSensorManager.lastError {
+                Text("⚠️ \(error)")
+                    .foregroundColor(.orange)
+            }
+            if let error = locationManager.lastError {
                 Text("⚠️ \(error)")
                     .foregroundColor(.orange)
             }
@@ -158,6 +189,8 @@ struct ContentView: View {
             Text("RGB frames written: \(recordingSessionManager.rgbFramesWritten)")
             Text("Depth frames written: \(recordingSessionManager.depthFramesWritten)")
             Text("Motion samples written: \(recordingSessionManager.motionSamplesWritten)")
+            Text("GPS samples written: \(recordingSessionManager.locationSamplesWritten)")
+            Text("Heading samples written: \(recordingSessionManager.headingSamplesWritten)")
             Text("Dropped frames: \(recordingSessionManager.droppedFrames)")
                 .foregroundColor(recordingSessionManager.droppedFrames > 0 ? .orange : .white)
             Text("Disk write errors: \(recordingSessionManager.diskWriteErrors)")
@@ -184,7 +217,9 @@ struct ContentView: View {
                 recordingSessionManager.captureMode = selectedCaptureMode
                 recordingSessionManager.startRecording(
                     lidarAvailable: arCaptureManager.isSceneDepthActive,
-                    motionAvailable: motionSensorManager.isMotionAvailable
+                    motionAvailable: motionSensorManager.isMotionAvailable,
+                    locationAvailable: locationManager.authorizationSummary == .authorized && locationManager.isLocationServicesEnabled,
+                    headingAvailable: locationManager.isHeadingAvailable
                 )
             }
         } label: {

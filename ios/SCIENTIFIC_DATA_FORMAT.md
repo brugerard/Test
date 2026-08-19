@@ -4,10 +4,10 @@ This document describes the on-disk data format produced by the BG_Sensing
 iOS app, so that a researcher who receives only an exported recording session
 plus this document can interpret the dataset correctly without the app.
 
-**Status: Phase 3.** RGB + LiDAR depth recording and Core Motion are
-implemented. GPS, barometer, and export/zip land in later phases (see
-`SETUP.md`) and this document will grow accordingly. Sections are marked
-`[Phase N]` to show when they became accurate.
+**Status: Phase 4.** RGB + LiDAR depth recording, Core Motion, and Core
+Location (GPS + heading) are implemented. Barometer and export/zip land in
+later phases (see `SETUP.md`) and this document will grow accordingly.
+Sections are marked `[Phase N]` to show when they became accurate.
 
 ## 1. Overview
 
@@ -40,7 +40,8 @@ Session_2026-08-19_11-45-32_a1b2c3d4/
     sensors/
         frames.csv                   (per RGB/depth frame-pair metadata)
         motion.csv                   (Core Motion, ~50 Hz — Section 12)
-        location.csv                 (Phase 4)
+        location.csv                 (GPS fixes — Section 13)
+        heading.csv                  (compass headings — Section 13)
         altimeter.csv                (Phase 5)
 ```
 
@@ -63,9 +64,9 @@ interchangeable and must not be confused:
 | **Image pixel coordinates** | Origin top-left, +X right, +Y down, in pixels of the captured RGB image at its *captured*, unrescaled resolution. See Section 7 on orientation. | pixels |
 | **Depth-map coordinates** | Origin top-left, +X right, +Y down, in pixels of the depth map, which is a lower resolution than the RGB image (typically 256x192 on iPhone 14 Pro). Use each depth frame's own *scaled* intrinsics (Section 6), never the RGB frame's. | pixels |
 | **Device coordinates** | Core Motion's reference frame for attitude/acceleration/rotation, relative to the device casing, not the camera. See Section 12.1. | — |
-| **Geographic WGS84** | Latitude/longitude from Core Location. | decimal degrees |
-| **Mean-sea-level (MSL) altitude** | GPS-derived altitude as reported by Core Location (`CLLocation.altitude`), which on iOS is referenced to mean sea level, not the WGS84 ellipsoid. | meters |
-| **WGS84 ellipsoidal altitude** | Height above the WGS84 ellipsoid, if/when exposed distinctly from MSL altitude. Documented fully in Phase 4 once implemented. | meters |
+| **Geographic WGS84** | Latitude/longitude from Core Location (`location.csv`, Section 13). | decimal degrees |
+| **Mean-sea-level (MSL) altitude** | GPS-derived altitude as reported by Core Location (`CLLocation.altitude`, `location.csv`'s `altitude` column), which on iOS is referenced to mean sea level, not the WGS84 ellipsoid. | meters |
+| **WGS84 ellipsoidal altitude** | Height above the WGS84 ellipsoid (`CLLocation.ellipsoidalAltitude`, `location.csv`'s `ellipsoidalAltitude` column) — distinct from MSL altitude above; never combined with it. Empty if the device doesn't report it for a given fix. | meters |
 | **Relative barometric altitude** | `CMAltimeter`'s relative altitude, referenced to wherever the barometer session started (device power-on / app session start) — **not** sea level and **not** GPS altitude. Documented fully in Phase 5. | meters |
 
 GPS altitude and barometric altitude are always stored as separate fields.
@@ -142,8 +143,8 @@ ARSession starts or restarts. This turns out to simplify synchronization: for
 AR frames and (from Phase 3) Core Motion samples,
 `nativeSensorTimestamp == systemMonotonicTime` exactly — no cross-domain
 conversion needed, just subtract the session's start time. Core Location's
-timestamps are wall-clock (`Date`), a genuinely different domain, and will be
-handled explicitly when Phase 4 lands.
+timestamps are wall-clock (`Date`), a genuinely different domain — see
+Section 13.1 for how `location.csv`/`heading.csv` handle that.
 
 No measurement's timestamp is ever fabricated or interpolated to "line up"
 with another stream — true acquisition times are preserved so alignment can
@@ -274,8 +275,8 @@ again — overwriting the first — when recording stops, with final counts.
 | `recordingConfiguration` | `{rgbFormat, rgbCaptureRateHz, captureMode, depthFormat, depthType, confidenceFormat}` — `captureMode` is `"continuous"` or `"manual"` (Section 11.1); `rgbCaptureRateHz` is meaningless for a `"manual"` session (frames are irregular, operator-triggered) |
 | `coordinateSystems` | Human-readable description of each coordinate system in use (Section 3), embedded so the dataset is self-describing even without this file |
 | `units` | Same idea, for units (Section 8) |
-| `sensorAvailability` | `{camera, lidarSceneDepth, motion}` as booleans — booleans for location/barometer arrive with those phases |
-| `frameCounts` | `{rgbFramesWritten, depthFramesWritten, motionSamplesWritten}` — `null` in the start-of-session copy |
+| `sensorAvailability` | `{camera, lidarSceneDepth, motion, location, heading}` as booleans — a boolean for barometer arrives with Phase 5 |
+| `frameCounts` | `{rgbFramesWritten, depthFramesWritten, motionSamplesWritten, locationSamplesWritten, headingSamplesWritten}` — `null` in the start-of-session copy |
 | `droppedFrames` | Count of frames skipped due to write backpressure (disk couldn't keep up) — `null` in the start-of-session copy |
 | `diskWriteErrors` | Count of write failures (not backpressure — actual I/O errors) — `null` in the start-of-session copy |
 | `notes` | Free text, currently used to flag which copy (start vs. final) this is |
@@ -384,23 +385,100 @@ respectively, not raw combined accelerometer output. There is no separate
 `CMAccelerometerData`) only exposes this decomposed pair, which is the more
 scientifically useful form Apple's own sensor fusion produces.
 
-### 12.3 Attitude reference frame — and why heading isn't here yet
+### 12.3 Attitude reference frame vs. compass heading
 
 `attitudeReferenceFrame` is `"xMagneticNorthZVertical"` when the device
 supports it (checked via `CMMotionManager.availableAttitudeReferenceFrames()`
 at recording start), falling back to `"xArbitraryZVertical"` — arbitrary,
 not tied to any compass direction — if not.
 
-**This is not the same as a compass heading**, and is intentionally not as
-precise as one:
+**This is not the same as `heading.csv`'s compass heading (Section 13.3),
+and is intentionally not as precise:**
 - It is **uncalibrated for magnetic declination** (the offset between
   magnetic north and true/geographic north, which varies by location).
-- It comes from Core Motion directly, not `CLHeading` — because getting
-  `CLHeading` (with its explicit accuracy figure, and true-vs-magnetic
-  heading both available) requires Core *Location* permission, which this
-  app deliberately doesn't request until Phase 4, to keep Phase 3 scoped to
-  Core Motion only.
+- It came from Core Motion directly rather than `CLHeading` in Phase 3,
+  because `CLHeading` requires Core *Location* permission — which Phase 3
+  deliberately didn't request yet, to keep it scoped to Core Motion only.
+  Phase 4 (Section 13) now adds the real thing.
 
-When Phase 4 adds `CLHeading`-based magnetic/true heading with an accuracy
-figure, treat that as the authoritative compass reading; `yaw` here is a
-directionally-useful but coarser proxy, not a replacement.
+Treat `heading.csv`'s `magneticHeading`/`trueHeading` as the authoritative
+compass reading; `motion.csv`'s `yaw` is a directionally-useful but coarser
+proxy, not a replacement — keep using it for attitude (roll/pitch/yaw as a
+consistent triple), not as a compass.
+
+## 13. Location & heading (`sensors/location.csv`, `sensors/heading.csv`) `[Phase 4]`
+
+Core Location: GPS fixes (`location.csv`) and compass headings
+(`heading.csv`), in separate files since they arrive as independent,
+asynchronously-rated update streams from `CLLocationManager` — see 13.4.
+Recorded continuously whenever a recording is active, at whatever rate iOS
+delivers updates (no throttling applied, matching the spec's "do not
+discard poor-accuracy observations" — every update iOS delivers is
+recorded, accuracy field included, rather than filtered).
+
+Requires "When In Use" location authorization
+(`NSLocationWhenInUseUsageDescription`), requested on first launch after
+this phase. If denied, `sensorAvailability.location`/`.heading` are `false`
+and no location/heading files are written for that session — this is
+surfaced in the live status panel ("GPS auth: Denied") and via
+`RecordingSessionManager`'s error message, not silently.
+
+### 13.1 Why Core Location's timestamps get different treatment
+
+Unlike `ARFrame.timestamp`/`CMDeviceMotion.timestamp` (both boot-relative,
+Section 4), `CLLocation.timestamp` and `CLHeading.timestamp` are **wall-clock
+`Date` values** — a genuinely different domain, flagged back in Section 4 as
+needing special handling once this phase landed. Two wall-clock fields are
+recorded, not one:
+
+- **`utcTimestamp`** — wall-clock at the instant this app's delegate
+  callback *received* the update (captured via `Date()` right when the
+  callback fires), matching the semantics `utcTimestamp` has in every other
+  file in this format.
+- **`nativeLocationTimestampUTC`** / **`nativeHeadingTimestampUTC`** —
+  `CLLocation`/`CLHeading`'s own timestamp: when the fix or heading reading
+  was actually computed. This can meaningfully lag `utcTimestamp` by GPS's
+  computation/delivery latency (typically small, but not zero, and worth
+  keeping separate rather than assuming they're identical).
+
+`sessionTimeSeconds`/`systemMonotonicTime` are still boot-relative and still
+directly comparable to every other stream's — they're derived from
+`ProcessInfo.processInfo.systemUptime` captured at the same delegate-callback
+receipt instant as `utcTimestamp`, not from `CLLocation`'s own timestamp
+(which has no boot-relative equivalent to draw from).
+
+### 13.2 `location.csv` columns
+
+| Column | Meaning |
+|---|---|
+| `sampleID` | 1-based, independent sequence from every other stream's IDs |
+| `sessionTimeSeconds`, `systemMonotonicTime`, `utcTimestamp` | See 13.1 — receipt-time based |
+| `nativeLocationTimestampUTC` | See 13.1 — `CLLocation`'s own fix time |
+| `latitude`, `longitude` | Decimal degrees, WGS84 |
+| `altitude` | Meters, **mean sea level** — see coordinate system table (Section 3), never combined with `ellipsoidalAltitude` or with `altimeter.csv`'s relative altitude (Phase 5) |
+| `ellipsoidalAltitude` | Meters, WGS84 ellipsoid. Empty field if unavailable |
+| `horizontalAccuracy`, `verticalAccuracy` | Meters. **Negative means invalid** (`CLLocation`'s own convention) — never discarded or clamped, always recorded as-is per the "don't discard poor-accuracy observations" requirement |
+| `speed`, `speedAccuracy` | Meters/second. Negative = invalid |
+| `course`, `courseAccuracy` | Degrees from true north, 0..<360. Negative = invalid |
+
+### 13.3 `heading.csv` columns
+
+| Column | Meaning |
+|---|---|
+| `sampleID` | Independent sequence from `location.csv`'s |
+| `sessionTimeSeconds`, `systemMonotonicTime`, `utcTimestamp` | See 13.1 |
+| `nativeHeadingTimestampUTC` | See 13.1 — `CLHeading`'s own reading time |
+| `magneticHeading` | Degrees, 0..<360, 0 = magnetic north, increasing clockwise. Negative = invalid |
+| `trueHeading` | Degrees, 0..<360, corrected for magnetic declination using the current location. Negative = invalid — commonly the case for the first few headings before any location fix has arrived, since true heading needs one to compute declination |
+| `headingAccuracy` | Degrees. Negative = invalid |
+
+### 13.4 Why two files instead of one
+
+`location.csv` and `heading.csv` are both "Core Location," but GPS fixes and
+compass headings are delivered by separate `CLLocationManagerDelegate`
+callbacks (`didUpdateLocations` / `didUpdateHeading`) at independent rates —
+heading typically updates much faster than GPS. Forcing them into one file
+would mean either duplicating GPS rows for every heading update or leaving
+half the columns empty on most rows; two files with their own `sampleID`
+sequences (matching how `motion.csv` is already separate from `frames.csv`)
+avoids that ambiguity entirely.

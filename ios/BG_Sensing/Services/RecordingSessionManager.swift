@@ -35,6 +35,11 @@ final class RecordingSessionManager: ObservableObject {
     @Published private(set) var diskWriteErrors = 0
     @Published private(set) var lastErrorMessage: String?
     @Published private(set) var currentSessionID: String?
+    /// Directory of the most recently *completed* session, for the in-app
+    /// Share button — a direct route to get recordings off the phone via
+    /// AirDrop/Save to Files/Mail that doesn't depend on Finder or the Files
+    /// app's "On My iPhone" discovery (which has proven unreliable in testing).
+    @Published private(set) var lastCompletedSessionURL: URL?
 
     /// RGB (and paired depth) capture rate. Not `@Published` and not lock-protected:
     /// it's read from the background frame-handling path on every frame, so it's
@@ -164,6 +169,7 @@ final class RecordingSessionManager: ObservableObject {
         stopElapsedTimer()
 
         guard let dirURL else { return }
+        lastCompletedSessionURL = dirURL
         let endUTC = Date()
         let lidarAvailableAtStart = SensorAvailability(camera: true, lidarSceneDepth: currentSessionLidarAvailable)
 

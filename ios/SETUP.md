@@ -173,12 +173,17 @@ a project by hand:
 2. Move the phone around for 15–30 seconds — walk to a different part of the
    room, point at objects at different distances — then tap **STOP
    RECORDING**.
-3. **Verify the files exist and read back correctly.** With the iPhone
-   connected to your Mac: open **Finder → your iPhone → Files → BG_Sensing**
-   (file sharing is enabled specifically so you can do this without
-   building the Phase 7 export feature first). You should see
-   `Sessions/Session_<date>_<uuid>/` with `metadata.json`, `rgb/`, `depth/`,
-   `sensors/frames.csv` inside. Drag that session folder to your Mac.
+3. **Get the session onto your Mac.** A **"Share Last Session"** button
+   appears above START/STOP RECORDING once a recording has stopped — tap
+   it and AirDrop the session folder to your Mac (fastest; iOS zips the
+   folder automatically for AirDrop). This uses the system share sheet
+   directly rather than Finder/Files-app discovery, which proved unreliable
+   in testing on at least one setup despite correct `Info.plist`
+   configuration (`UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace`)
+   — if Finder → your iPhone → Files → BG_Sensing happens to work for you,
+   that's an equally valid way to grab the folder, but don't rely on it.
+   Either way you should end up with `Session_<date>_<uuid>/` containing
+   `metadata.json`, `rgb/`, `depth/`, `sensors/frames.csv`.
 4. Quick read-back check (needs Python 3 + numpy: `pip3 install numpy` if
    you don't have it) — run from the folder containing the session:
    ```bash

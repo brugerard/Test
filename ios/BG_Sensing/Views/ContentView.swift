@@ -25,8 +25,11 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .frame(maxHeight: .infinity, alignment: .top)
 
-            recordButton
-                .padding(.bottom, 32)
+            VStack(spacing: 10) {
+                shareLastSessionButton
+                recordButton
+            }
+            .padding(.bottom, 32)
         }
         .onAppear {
             arCaptureManager.frameHandler = { [recordingSessionManager] snapshot in
@@ -154,6 +157,30 @@ struct ContentView: View {
                 .cornerRadius(14)
         }
         .padding(.horizontal, 24)
+    }
+
+    // MARK: - Share last session
+    //
+    // A direct route to get a recorded session off the phone (AirDrop, Save
+    // to Files, Mail, ...) via the system share sheet. Added because Finder's
+    // device-file-sharing view and the Files app's "On My iPhone" listing
+    // both proved unreliable in testing despite correct Info.plist
+    // configuration — the share sheet doesn't depend on either.
+
+    @ViewBuilder
+    private var shareLastSessionButton: some View {
+        if !recordingSessionManager.isRecordingPublished, let sessionURL = recordingSessionManager.lastCompletedSessionURL {
+            ShareLink(item: sessionURL) {
+                Label("Share Last Session", systemImage: "square.and.arrow.up")
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.blue.opacity(0.85))
+                    .cornerRadius(12)
+            }
+            .padding(.horizontal, 24)
+        }
     }
 
     private func format(_ value: Float) -> String {

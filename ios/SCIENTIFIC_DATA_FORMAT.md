@@ -1,6 +1,6 @@
-# PhoneSensors — Scientific Data Format
+# BG_Sensing — Scientific Data Format
 
-This document describes the on-disk data format produced by the PhoneSensors
+This document describes the on-disk data format produced by the BG_Sensing
 iOS app, so that a researcher who receives only an exported recording session
 plus this document can interpret the dataset correctly without the app.
 

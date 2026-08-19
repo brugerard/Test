@@ -1,4 +1,4 @@
-name: PhoneSensors
+name: BG_Sensing
 
 options:
   bundleIdPrefix: com.brugerard
@@ -12,21 +12,22 @@ settings:
     CODE_SIGN_STYLE: Automatic
 
 targets:
-  PhoneSensors:
+  BG_Sensing:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
     sources:
-      - path: PhoneSensors
+      - path: BG_Sensing
         excludes:
           - Info.plist
           - "**/.gitkeep"
     info:
-      path: PhoneSensors/Info.plist
+      path: BG_Sensing/Info.plist
     settings:
       base:
-        PRODUCT_NAME: PhoneSensors
-        PRODUCT_BUNDLE_IDENTIFIER: com.brugerard.phonesensors
+        PRODUCT_NAME: BG_Sensing
+        PRODUCT_BUNDLE_IDENTIFIER: com.brugerard.bgsensing
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     scheme:
       testTargets: []
       gatherCoverageData: false

@@ -1,4 +1,4 @@
-# PhoneSensors — Xcode Project Setup (Phase 1)
+# BG_Sensing — Xcode Project Setup (Phase 1)
 
 There is no `.xcodeproj` committed to this repo — it's a generated artifact
 (see "Why generated, not committed" below). Generate it with **XcodeGen**
@@ -20,32 +20,51 @@ cd ios
 xcodegen generate
 ```
 
-This reads `project.yml` and the `PhoneSensors/` source folder (already in
-the repo) and produces `PhoneSensors.xcodeproj`, wired up with:
-- all Swift files under `PhoneSensors/App`, `Views`, `Services`, `Models`
-- `PhoneSensors/Info.plist` as the app's Info.plist (camera usage
+This reads `project.yml` and the `BG_Sensing/` source folder (already in
+the repo) and produces `BG_Sensing.xcodeproj`, wired up with:
+- all Swift files under `BG_Sensing/App`, `Views`, `Services`, `Models`
+- `BG_Sensing/Info.plist` as the app's Info.plist (camera usage
   description + `UIRequiredDeviceCapabilities: [arkit]` already set)
+- `BG_Sensing/Assets.xcassets/AppIcon.appiconset` as the app icon
 - deployment target iOS 16.0, iPhone-only, automatic code signing
-- a default `PhoneSensors` scheme, ready to run
+- a default `BG_Sensing` scheme, ready to run
 
-## 3. Open and sign
+## 3. Open on your Mac
 
 ```
-open PhoneSensors.xcodeproj
+cd ios
+xcodegen generate && open BG_Sensing.xcodeproj
 ```
 
-In Xcode: select the `PhoneSensors` target → **Signing & Capabilities** →
+That's the one command to run in Terminal once you have this repo checked
+out locally (`git pull` first if you haven't already). It regenerates the
+project (picking up any changes) and opens it in Xcode.
+
+## 4. Sign
+
+In Xcode: select the `BG_Sensing` target → **Signing & Capabilities** →
 pick your Apple ID/team under "Team" (Automatic signing). `project.yml`
 doesn't hardcode a team, since that's specific to your Apple Developer
 account.
 
-## 4. Run destination
+## 5. Run destination
 
 **Run on the physical iPhone 14 Pro, not the Simulator.** The Simulator has
 no camera and no LiDAR — `ARWorldTrackingConfiguration` will report scene
 depth as unsupported and the camera preview will be blank at best. Connect
 the iPhone, select it as the run destination, press Run. On first launch,
 iOS will prompt for camera permission — allow it.
+
+## App icon
+
+`BG_Sensing/Assets.xcassets/AppIcon.appiconset/AppIcon.png` is a single
+1024×1024 source image (a radar/sensor-pulse mark: crosshair + glowing
+center pulse + three colored nodes for camera/LiDAR/GPS fusion, on a dark
+scientific-grid background). It uses Xcode 14+'s "single size" app icon
+format — Xcode generates every smaller size it needs from this one PNG
+automatically, so there's nothing else to add. If you want a different
+design later, just replace that PNG (must stay 1024×1024, no alpha/transparency)
+and re-run `xcodegen generate`.
 
 ## Why generated, not committed
 
@@ -69,17 +88,20 @@ If you'd rather not install XcodeGen, you can wrap the same source files in
 a project by hand:
 
 1. Xcode → **File → New → Project… → iOS → App**. Product Name
-   `PhoneSensors`, Interface **SwiftUI**, Language **Swift**. Uncheck Core
+   `BG_Sensing`, Interface **SwiftUI**, Language **Swift**. Uncheck Core
    Data / Include Tests. Save it inside `ios/`.
-2. Delete Xcode's generated `ContentView.swift` / `PhoneSensorsApp.swift`.
-3. Right-click the `PhoneSensors` group → **Add Files to "PhoneSensors"…**
-   and add the existing `App/`, `Views/`, `Services/`, `Models/` folders
-   from the repo (Create groups, target checkbox ticked).
+2. Delete Xcode's generated `ContentView.swift` / `BG_SensingApp.swift`.
+3. Right-click the `BG_Sensing` group → **Add Files to "BG_Sensing"…**
+   and add the existing `App/`, `Views/`, `Services/`, `Models/`,
+   `Assets.xcassets/` folders from the repo (Create groups, target
+   checkbox ticked).
 4. Target → **Info** tab → add **Privacy - Camera Usage Description**
    (`NSCameraUsageDescription`) and **Required device capabilities**
    (`UIRequiredDeviceCapabilities` = `[arkit]`) — values are in
-   `PhoneSensors/Info.plist` if you want to copy them verbatim.
-5. Set deployment target iOS 16.0 and your signing team.
+   `BG_Sensing/Info.plist` if you want to copy them verbatim.
+5. Target → **General** tab → App Icons and Launch Images → set App Icon
+   Source to `AppIcon` (from the added asset catalog).
+6. Set deployment target iOS 16.0 and your signing team.
 
 ## What to test on the iPhone (Phase 1)
 
@@ -98,6 +120,8 @@ a project by hand:
 3. Point the phone at a nearby object vs. a far wall and confirm the mean
    depth value changes accordingly — this is the sanity check that scene
    depth is real, live LiDAR data and not a stale/placeholder buffer.
+4. Confirm the app icon (radar/pulse mark) shows correctly on the Home
+   Screen after install.
 
 ## Next phase
 

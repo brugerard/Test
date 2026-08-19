@@ -180,6 +180,13 @@ a project by hand:
 5. Try recording again without force-quitting the app in between — confirm
    a second, distinct session folder is created and the frame counters reset
    to 0 at the start of the new recording.
+6. **Keep the phone unlocked and the app in the foreground for the whole
+   test.** ARKit does not permit camera/GPU work while backgrounded — if you
+   lock the phone or switch apps mid-recording, the app now stops the
+   recording and pauses the AR session cleanly (rather than repeatedly
+   failing to encode frames, which is what happened before this was added).
+   That's expected behavior, not a bug: start a fresh recording after
+   returning to the app.
 
 ## Next phase
 

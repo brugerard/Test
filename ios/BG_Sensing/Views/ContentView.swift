@@ -8,6 +8,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var arCaptureManager = ARCaptureManager()
     @StateObject private var recordingSessionManager = RecordingSessionManager()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -38,6 +39,30 @@ struct ContentView: View {
                 recordingSessionManager.stopRecording()
             }
             arCaptureManager.stop()
+        }
+        // ARKit forbids camera/GPU work while backgrounded — without this, a
+        // backgrounded recording keeps trying (and failing) to encode frames
+        // via Metal instead of stopping cleanly. `.inactive` is left alone: it
+        // covers transient interruptions (Control Center, a system alert, an
+        // incoming call) that ARKit's own sessionWasInterrupted/
+        // sessionInterruptionEnded delegate callbacks already handle without
+        // us tearing anything down.
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                if !arCaptureManager.isSessionRunning {
+                    arCaptureManager.start()
+                }
+            case .background:
+                if recordingSessionManager.isRecordingPublished {
+                    recordingSessionManager.stopRecording()
+                }
+                arCaptureManager.stop()
+            case .inactive:
+                break
+            @unknown default:
+                break
+            }
         }
     }
 

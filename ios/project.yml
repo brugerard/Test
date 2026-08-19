@@ -44,6 +44,13 @@ targets:
     #      given key is on some INFOPLIST_KEY_ shortlist. All Info.plist
     #      keys now live in exactly one place, below.
     info:
+      # Where XcodeGen writes the plist it generates from `properties` below.
+      # Deliberately outside `BG_Sensing/` (the `sources:` scanned folder above)
+      # so the generated file is never picked up a second time as a resource.
+      # XcodeGen's schema treats `path` as required even when `properties` is
+      # supplied — omitting it caused `Decoding failed at "path": Nothing found`
+      # even on a recent XcodeGen (2.46.0), which ruled out a version issue.
+      path: Info.plist
       properties:
         CFBundleDevelopmentRegion: en
         CFBundleExecutable: $(EXECUTABLE_NAME)

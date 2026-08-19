@@ -23,8 +23,8 @@ xcodegen generate
 This reads `project.yml` and the `BG_Sensing/` source folder (already in
 the repo) and produces `BG_Sensing.xcodeproj`, wired up with:
 - all Swift files under `BG_Sensing/App`, `Views`, `Services`, `Models`
-- `BG_Sensing/Info.plist` as the app's Info.plist (camera usage
-  description + `UIRequiredDeviceCapabilities: [arkit]` already set)
+- an Xcode-generated Info.plist (see "Info.plist" below) with the camera
+  usage description already set
 - `BG_Sensing/Assets.xcassets/AppIcon.appiconset` as the app icon
 - deployment target iOS 16.0, iPhone-only, automatic code signing
 - a default `BG_Sensing` scheme, ready to run
@@ -40,6 +40,11 @@ That's the one command to run in Terminal once you have this repo checked
 out locally (`git pull` first if you haven't already). It regenerates the
 project (picking up any changes) and opens it in Xcode.
 
+**If you're re-running this after a previous build crashed or behaved oddly**,
+also do a clean rebuild once (stale derived data can mask project.yml
+changes): in Xcode, **Product → Clean Build Folder** (⇧⌘K), and delete the
+app from your iPhone before reinstalling.
+
 ## 4. Sign
 
 In Xcode: select the `BG_Sensing` target → **Signing & Capabilities** →
@@ -54,6 +59,21 @@ no camera and no LiDAR — `ARWorldTrackingConfiguration` will report scene
 depth as unsupported and the camera preview will be blank at best. Connect
 the iPhone, select it as the run destination, press Run. On first launch,
 iOS will prompt for camera permission — allow it.
+
+## Info.plist
+
+There's no physical `Info.plist` file in the source tree. The target uses
+`GENERATE_INFOPLIST_FILE: YES` with `INFOPLIST_KEY_*` build settings in
+`project.yml` — this is Xcode's own default mechanism for new projects
+(Xcode 13+), and is what actually gets the camera usage description
+correctly baked into the built app. (An earlier version of this project
+used an explicit `Info.plist` file wired up via XcodeGen's `info.path`;
+that silently failed to carry `NSCameraUsageDescription` into the build on
+at least one XcodeGen setup, causing an immediate launch-time crash with no
+permission prompt. The build-setting approach avoids that file-linking step
+entirely.) To see or change Info.plist values, edit the
+`INFOPLIST_KEY_*` entries directly in `project.yml`, or use Xcode's target →
+**Info** tab after generating — either one is reflected in the build.
 
 ## App icon
 
@@ -79,8 +99,8 @@ the generated project so it can never go stale relative to `project.yml` or
 cause merge conflicts.
 
 **Regenerate after pulling changes**: any time you pull an update from me
-that adds/removes source files or changes `project.yml`/`Info.plist`,
-re-run `xcodegen generate` before building.
+that adds/removes source files or changes `project.yml`, re-run
+`xcodegen generate` before building.
 
 ## Fallback: manual project creation (skip if XcodeGen worked)
 
@@ -96,9 +116,9 @@ a project by hand:
    `Assets.xcassets/` folders from the repo (Create groups, target
    checkbox ticked).
 4. Target → **Info** tab → add **Privacy - Camera Usage Description**
-   (`NSCameraUsageDescription`) and **Required device capabilities**
-   (`UIRequiredDeviceCapabilities` = `[arkit]`) — values are in
-   `BG_Sensing/Info.plist` if you want to copy them verbatim.
+   (`NSCameraUsageDescription`) = "This app uses the camera together with
+   ARKit to record RGB imagery and LiDAR depth for scientific data
+   collection."
 5. Target → **General** tab → App Icons and Launch Images → set App Icon
    Source to `AppIcon` (from the added asset catalog).
 6. Set deployment target iOS 16.0 and your signing team.

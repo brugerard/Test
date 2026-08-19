@@ -19,15 +19,25 @@ targets:
     sources:
       - path: BG_Sensing
         excludes:
-          - Info.plist
           - "**/.gitkeep"
-    info:
-      path: BG_Sensing/Info.plist
     settings:
       base:
         PRODUCT_NAME: BG_Sensing
         PRODUCT_BUNDLE_IDENTIFIER: com.brugerard.bgsensing
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+        # Info.plist is Xcode-generated from these INFOPLIST_KEY_* build
+        # settings rather than from a physical Info.plist file. This is
+        # Xcode's own default mechanism for new projects (Xcode 13+) and
+        # is more reliable across XcodeGen versions than wiring up an
+        # explicit Info.plist file path — that approach silently failed
+        # to carry NSCameraUsageDescription into the built app for us.
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: "This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection."
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
     scheme:
       testTargets: []
       gatherCoverageData: false

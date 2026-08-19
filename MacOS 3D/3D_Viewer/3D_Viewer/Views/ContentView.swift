@@ -108,6 +108,21 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Quality") {
+                    Toggle("Shade by surface angle", isOn: $options.useNormalShading)
+                    Picker("Minimum confidence", selection: $options.minConfidence) {
+                        Text("Low (all points)").tag(UInt8(0))
+                        Text("Medium").tag(UInt8(1))
+                        Text("High only").tag(UInt8(2))
+                    }
+                    LabeledContent("Edge-artifact filter") {
+                        Slider(value: $options.edgeDiscontinuityThreshold, in: 0.02...0.30)
+                    }
+                    Text("Drops \"flying pixel\" points that straddle a foreground/background edge, and low-confidence LiDAR samples — both are common sources of stray points and streaky noise.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Button("Fit Camera to Cloud") { frameToken += 1 }
                 }
@@ -125,6 +140,9 @@ struct ContentView: View {
         .onChange(of: selectedFrameIndex) { rebuildPointCloud(refit: false) }
         .onChange(of: options.colorMode) { rebuildPointCloud(refit: false) }
         .onChange(of: options.stride) { rebuildPointCloud(refit: false) }
+        .onChange(of: options.useNormalShading) { rebuildPointCloud(refit: false) }
+        .onChange(of: options.minConfidence) { rebuildPointCloud(refit: false) }
+        .onChange(of: options.edgeDiscontinuityThreshold) { rebuildPointCloud(refit: false) }
     }
 
     // MARK: Detail

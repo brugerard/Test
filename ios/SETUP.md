@@ -1,73 +1,85 @@
 # PhoneSensors — Xcode Project Setup (Phase 1)
 
-There is no `.xcodeproj` in this repo yet — Xcode project files are a
-macOS/Xcode artifact and this session has no Xcode to generate one correctly.
-The Swift source files are written and organized already; you just need to
-wrap them in an Xcode project shell. This takes about 5 minutes.
+There is no `.xcodeproj` committed to this repo — it's a generated artifact
+(see "Why generated, not committed" below). Generate it with **XcodeGen**
+from `ios/project.yml`, which takes one command.
 
-## 1. Create the project
+## 1. Install XcodeGen (once)
 
-1. Open Xcode → **File → New → Project…**
-2. Choose **iOS → App**, click Next.
-3. Product Name: `PhoneSensors`
-   Interface: **SwiftUI**
-   Language: **Swift**
-   Uncheck "Use Core Data" and "Include Tests" (not needed for the MVP).
-4. Save it **inside `ios/`** in this repo, i.e. so the generated
-   `PhoneSensors.xcodeproj` sits at `ios/PhoneSensors.xcodeproj` next to the
-   `PhoneSensors/` source folder already in the repo. Xcode will create its
-   own `PhoneSensors/` folder with a default `ContentView.swift` and
-   `PhoneSensorsApp.swift` — that's fine, you'll replace them next.
+```
+brew install xcodegen
+```
 
-## 2. Replace the generated files with the repo's source
+(Requires Homebrew. See https://github.com/yonaskolb/XcodeGen if you don't
+use Homebrew.)
 
-1. In Finder/Xcode, **delete** the Xcode-generated `ContentView.swift` and
-   `PhoneSensorsApp.swift` (move to trash — they're placeholders).
-2. In Xcode's project navigator, right-click the `PhoneSensors` group →
-   **Add Files to "PhoneSensors"…**, and add the folders already in this
-   repo:
-   - `ios/PhoneSensors/App/PhoneSensorsApp.swift`
-   - `ios/PhoneSensors/Views/ContentView.swift`
-   - `ios/PhoneSensors/Views/ARCameraPreviewView.swift`
-   - `ios/PhoneSensors/Services/ARCaptureManager.swift`
-   - `ios/PhoneSensors/Models/` (currently empty — a placeholder for later phases; Xcode will let you create an empty group instead if it won't add an empty folder)
+## 2. Generate the project
 
-   Use "Create groups" (not folder references) and make sure the
-   `PhoneSensors` app target's checkbox is ticked for each file.
+```
+cd ios
+xcodegen generate
+```
 
-## 3. Permissions (Info.plist)
+This reads `project.yml` and the `PhoneSensors/` source folder (already in
+the repo) and produces `PhoneSensors.xcodeproj`, wired up with:
+- all Swift files under `PhoneSensors/App`, `Views`, `Services`, `Models`
+- `PhoneSensors/Info.plist` as the app's Info.plist (camera usage
+  description + `UIRequiredDeviceCapabilities: [arkit]` already set)
+- deployment target iOS 16.0, iPhone-only, automatic code signing
+- a default `PhoneSensors` scheme, ready to run
 
-Xcode 15+ projects manage `Info.plist` via build settings by default (no
-physical file). The easiest path:
+## 3. Open and sign
 
-1. Select the `PhoneSensors` target → **Info** tab.
-2. Under "Custom iOS Target Properties", add:
-   - **Privacy - Camera Usage Description** (`NSCameraUsageDescription`) =
-     `This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection.`
-   - **Required device capabilities** (`UIRequiredDeviceCapabilities`) → array
-     with one item: `arkit`
+```
+open PhoneSensors.xcodeproj
+```
 
-   (`ios/PhoneSensors/Info.plist` in the repo has these same keys as a
-   reference/backup if you prefer to use an explicit Info.plist file instead
-   — set `GENERATE_INFOPLIST_FILE = NO` and point `INFOPLIST_FILE` at it.)
+In Xcode: select the `PhoneSensors` target → **Signing & Capabilities** →
+pick your Apple ID/team under "Team" (Automatic signing). `project.yml`
+doesn't hardcode a team, since that's specific to your Apple Developer
+account.
 
-3. Location and Motion usage descriptions are **not** needed yet — they'll be
-   added in Phases 4 and 3 respectively. Don't add them prematurely.
+## 4. Run destination
 
-## 4. Build settings
+**Run on the physical iPhone 14 Pro, not the Simulator.** The Simulator has
+no camera and no LiDAR — `ARWorldTrackingConfiguration` will report scene
+depth as unsupported and the camera preview will be blank at best. Connect
+the iPhone, select it as the run destination, press Run. On first launch,
+iOS will prompt for camera permission — allow it.
 
-- **Deployment target**: iOS 16.0 (matches iPhone 14 Pro's shipped OS; scene
-  depth itself only requires iOS 14+, but 16 is a safe modern floor).
-- **Signing**: set your Apple ID / team under Signing & Capabilities so you
-  can deploy to your physical iPhone.
+## Why generated, not committed
 
-## 5. Run destination
+`.xcodeproj` is really a directory of XML/plist files keyed by opaque
+UUIDs. Hand-editing or hand-writing one outside Xcode is error-prone and
+easy to corrupt, and this session has no Xcode/macOS to generate or verify
+one directly. XcodeGen's `project.yml` is plain, diffable text — safe for
+me to edit as new phases add files (new manager classes, new Info.plist
+keys, new capabilities) — and running `xcodegen generate` regenerates a
+correct `.xcodeproj` from it deterministically. `ios/.gitignore` excludes
+the generated project so it can never go stale relative to `project.yml` or
+cause merge conflicts.
 
-**You must run on the physical iPhone 14 Pro, not the Simulator.** The
-Simulator has no camera and no LiDAR — `ARWorldTrackingConfiguration` will
-report scene depth as unsupported and the camera preview will be blank at
-best. Connect the iPhone, select it as the run destination, and press Run.
-On first launch, iOS will prompt for camera permission — allow it.
+**Regenerate after pulling changes**: any time you pull an update from me
+that adds/removes source files or changes `project.yml`/`Info.plist`,
+re-run `xcodegen generate` before building.
+
+## Fallback: manual project creation (skip if XcodeGen worked)
+
+If you'd rather not install XcodeGen, you can wrap the same source files in
+a project by hand:
+
+1. Xcode → **File → New → Project… → iOS → App**. Product Name
+   `PhoneSensors`, Interface **SwiftUI**, Language **Swift**. Uncheck Core
+   Data / Include Tests. Save it inside `ios/`.
+2. Delete Xcode's generated `ContentView.swift` / `PhoneSensorsApp.swift`.
+3. Right-click the `PhoneSensors` group → **Add Files to "PhoneSensors"…**
+   and add the existing `App/`, `Views/`, `Services/`, `Models/` folders
+   from the repo (Create groups, target checkbox ticked).
+4. Target → **Info** tab → add **Privacy - Camera Usage Description**
+   (`NSCameraUsageDescription`) and **Required device capabilities**
+   (`UIRequiredDeviceCapabilities` = `[arkit]`) — values are in
+   `PhoneSensors/Info.plist` if you want to copy them verbatim.
+5. Set deployment target iOS 16.0 and your signing team.
 
 ## What to test on the iPhone (Phase 1)
 

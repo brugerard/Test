@@ -5,6 +5,10 @@ import Foundation
 struct RecordingConfiguration: Codable {
     var rgbFormat: String = "HEIC"
     var rgbCaptureRateHz: Double
+    /// "continuous" (auto-capture throttled to rgbCaptureRateHz) or "manual"
+    /// (only operator-triggered captures — rgbCaptureRateHz is then
+    /// meaningless and should be ignored when interpreting this session).
+    var captureMode: String = "continuous"
     var depthFormat: String = "Float32 little-endian raw binary (.bin) + JSON sidecar"
     var depthType: String = "raw_sceneDepth"
     var confidenceFormat: String = "UInt8 raw binary (.bin), ARConfidenceLevel raw values (0=low,1=medium,2=high), same width/height as depth"

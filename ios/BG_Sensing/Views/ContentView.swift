@@ -9,6 +9,10 @@ struct ContentView: View {
     @StateObject private var arCaptureManager = ARCaptureManager()
     @StateObject private var recordingSessionManager = RecordingSessionManager()
     @Environment(\.scenePhase) private var scenePhase
+    /// Chosen before starting a recording; applied to
+    /// `recordingSessionManager.captureMode` at the moment START is tapped
+    /// (that property isn't safe to change mid-recording — see its doc comment).
+    @State private var selectedCaptureMode: CaptureMode = .continuous
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -27,6 +31,12 @@ struct ContentView: View {
 
             VStack(spacing: 10) {
                 shareLastSessionButton
+                if !recordingSessionManager.isRecordingPublished {
+                    captureModePicker
+                }
+                if recordingSessionManager.isRecordingPublished && recordingSessionManager.captureMode == .manual {
+                    manualCaptureButton
+                }
                 recordButton
             }
             .padding(.bottom, 32)
@@ -119,6 +129,7 @@ struct ContentView: View {
             if let sessionID = recordingSessionManager.currentSessionID {
                 Text(sessionID)
             }
+            Text("Mode: \(recordingSessionManager.captureMode.rawValue)")
             Text(String(format: "Elapsed: %.1f s", recordingSessionManager.elapsedSeconds))
             Text("RGB frames written: \(recordingSessionManager.rgbFramesWritten)")
             Text("Depth frames written: \(recordingSessionManager.depthFramesWritten)")
@@ -145,6 +156,7 @@ struct ContentView: View {
             if recordingSessionManager.isRecordingPublished {
                 recordingSessionManager.stopRecording()
             } else {
+                recordingSessionManager.captureMode = selectedCaptureMode
                 recordingSessionManager.startRecording(lidarAvailable: arCaptureManager.isSceneDepthActive)
             }
         } label: {
@@ -154,6 +166,38 @@ struct ContentView: View {
                 .padding(.vertical, 16)
                 .frame(maxWidth: .infinity)
                 .background(recordingSessionManager.isRecordingPublished ? Color.red : Color.green)
+                .cornerRadius(14)
+        }
+        .padding(.horizontal, 24)
+    }
+
+    // MARK: - Capture mode (Continuous vs. Manual/operator-triggered)
+
+    private var captureModePicker: some View {
+        Picker("Capture Mode", selection: $selectedCaptureMode) {
+            ForEach(CaptureMode.allCases, id: \.self) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 24)
+        .background(Color.black.opacity(0.4))
+        .cornerRadius(8)
+    }
+
+    /// Only shown while recording in `.manual` mode. Each tap writes exactly
+    /// one RGB+depth+sensor snapshot from whatever ARKit most recently
+    /// delivered — see `RecordingSessionManager.triggerManualCapture()`.
+    private var manualCaptureButton: some View {
+        Button {
+            recordingSessionManager.triggerManualCapture()
+        } label: {
+            Label("CAPTURE", systemImage: "camera.fill")
+                .font(.headline)
+                .foregroundColor(.white)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
+                .background(Color.blue)
                 .cornerRadius(14)
         }
         .padding(.horizontal, 24)

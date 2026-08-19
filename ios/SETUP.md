@@ -173,6 +173,16 @@ a project by hand:
 2. Move the phone around for 15–30 seconds — walk to a different part of the
    room, point at objects at different distances — then tap **STOP
    RECORDING**.
+3. **Manual capture mode**: before tapping START, switch the segmented
+   control above it from **Continuous** to **Manual**. Start recording, walk
+   to a few different vantage points, and tap the blue **CAPTURE** button
+   (only visible in Manual mode) once at each — hold still for a moment
+   before each tap. Frame counts should only tick up on tap, not
+   continuously. Stop, and confirm via the same read-back steps below that
+   `metadata.json`'s `recordingConfiguration.captureMode` says `"manual"`
+   and the frame timestamps in `frames.csv` are irregular (gaps matching
+   however long you paused between taps) rather than a steady ~0.2s
+   cadence.
 3. **Get the session onto your Mac.** A **"Share Last Session"** button
    appears above START/STOP RECORDING once a recording has stopped — tap
    it and AirDrop the session folder to your Mac (fastest; iOS zips the

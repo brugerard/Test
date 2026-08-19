@@ -2,10 +2,21 @@ import Foundation
 import os
 import UIKit
 
-/// Mutable recording state shared between the main thread (start/stop, called
-/// from SwiftUI button actions) and ARKit's background delegate queue (every
-/// captured frame, via `handle(frame:)`). Everything here is only ever touched
-/// through `RecordingSessionManager.stateLock`.
+/// How RecordingSessionManager decides which AR frames to capture to disk.
+enum CaptureMode: String, Equatable, Hashable, CaseIterable {
+    /// Auto-capture at `rgbCaptureRateHz`, throttled — the original behavior.
+    case continuous = "Continuous"
+    /// Capture nothing automatically; only `triggerManualCapture()` writes a
+    /// frame. Intended for deliberate, stand-still, photogrammetry-style
+    /// capture, which avoids the motion blur and heavy frame-to-frame
+    /// overlap that continuous capture-while-walking produces.
+    case manual = "Manual"
+}
+
+/// Mutable recording state shared between the main thread (start/stop/manual
+/// trigger, called from SwiftUI button actions) and ARKit's background
+/// delegate queue (every captured frame, via `handle(frame:)`). Everything
+/// here is only ever touched through `RecordingSessionManager.stateLock`.
 private struct RecordingState {
     var isRecording = false
     var sessionID = ""
@@ -16,11 +27,19 @@ private struct RecordingState {
     var sessionStartUTC = Date()
     var frameIndex = 0
     var lastCaptureSessionTime: TimeInterval = -.greatestFiniteMagnitude
+    /// In `.manual` capture mode, the most recent frame ARKit has delivered —
+    /// refreshed on every `handle(frame:)` call but never auto-written.
+    /// `triggerManualCapture()` writes whatever is cached here at the moment
+    /// of the tap. Retaining only the single latest snapshot (not a queue)
+    /// keeps this bounded regardless of how long the operator waits between
+    /// taps.
+    var latestFrameForManualCapture: ARFrameSnapshot?
 }
 
 /// Owns the lifecycle of one recording session: creating the on-disk directory
-/// structure, deciding (via a throttle) which AR frames actually get captured,
-/// dispatching writes to `DataWriter`, and tracking live health counters for the UI.
+/// structure, deciding which AR frames actually get captured (continuously
+/// throttled, or one-at-a-time on operator trigger), dispatching writes to
+/// `DataWriter`, and tracking live health counters for the UI.
 ///
 /// Deliberately has no dependency on ARKit types beyond what arrives through
 /// `ARFrameSnapshot` — it doesn't know or care that frames come from ARKit
@@ -41,11 +60,16 @@ final class RecordingSessionManager: ObservableObject {
     /// app's "On My iPhone" discovery (which has proven unreliable in testing).
     @Published private(set) var lastCompletedSessionURL: URL?
 
-    /// RGB (and paired depth) capture rate. Not `@Published` and not lock-protected:
-    /// it's read from the background frame-handling path on every frame, so it's
-    /// only safe to change before `startRecording()` — not mid-recording. A future
-    /// settings UI should write it while stopped.
+    /// RGB (and paired depth) capture rate in `.continuous` mode. Not
+    /// `@Published` and not lock-protected: it's read from the background
+    /// frame-handling path on every frame, so it's only safe to change before
+    /// `startRecording()` — not mid-recording. A future settings UI should
+    /// write it while stopped.
     var rgbCaptureRateHz: Double = 5.0
+
+    /// Same thread-safety caveat as `rgbCaptureRateHz`: set before
+    /// `startRecording()`, not mid-recording.
+    var captureMode: CaptureMode = .continuous
 
     private let stateLock = OSAllocatedUnfairLock(initialState: RecordingState())
     private let dataWriter = DataWriter()
@@ -111,6 +135,7 @@ final class RecordingSessionManager: ObservableObject {
             state.sessionStartUTC = startUTC
             state.frameIndex = 0
             state.lastCaptureSessionTime = -.greatestFiniteMagnitude
+            state.latestFrameForManualCapture = nil
         }
 
         isRecordingPublished = true
@@ -124,7 +149,8 @@ final class RecordingSessionManager: ObservableObject {
         elapsedTimerStartMonotonic = startMonotonic
         startElapsedTimer()
 
-        let configuration = RecordingConfiguration(rgbCaptureRateHz: rgbCaptureRateHz)
+        let modeLabel = captureMode == .continuous ? "continuous" : "manual"
+        let configuration = RecordingConfiguration(rgbCaptureRateHz: rgbCaptureRateHz, captureMode: modeLabel)
         let availability = SensorAvailability(camera: true, lidarSceneDepth: lidarAvailable)
         Task {
             let metadata = SessionMetadata(
@@ -162,6 +188,7 @@ final class RecordingSessionManager: ObservableObject {
         let (sessionID, dirURL, startUTC) = stateLock.withLock { state -> (String, URL?, Date) in
             let result = (state.sessionID, state.sessionDirectoryURL, state.sessionStartUTC)
             state.isRecording = false
+            state.latestFrameForManualCapture = nil
             return result
         }
 
@@ -172,6 +199,7 @@ final class RecordingSessionManager: ObservableObject {
         lastCompletedSessionURL = dirURL
         let endUTC = Date()
         let lidarAvailableAtStart = SensorAvailability(camera: true, lidarSceneDepth: currentSessionLidarAvailable)
+        let modeLabel = captureMode == .continuous ? "continuous" : "manual"
 
         Task {
             let metadata = SessionMetadata(
@@ -181,7 +209,7 @@ final class RecordingSessionManager: ObservableObject {
                 sessionEndUTC: ISO8601DateFormatter().string(from: endUTC),
                 deviceHardwareIdentifier: DeviceInfo.hardwareIdentifier,
                 systemVersion: UIDevice.current.systemVersion,
-                recordingConfiguration: RecordingConfiguration(rgbCaptureRateHz: rgbCaptureRateHz),
+                recordingConfiguration: RecordingConfiguration(rgbCaptureRateHz: rgbCaptureRateHz, captureMode: modeLabel),
                 coordinateSystems: SessionMetadata.coordinateSystemDescriptions(),
                 units: SessionMetadata.unitDescriptions(),
                 sensorAvailability: lidarAvailableAtStart,
@@ -200,24 +228,63 @@ final class RecordingSessionManager: ObservableObject {
 
     // MARK: - Frame handling (ARKit background delegate queue)
 
-    func handle(frame: ARFrameSnapshot) {
-        struct CaptureDecision {
-            let frameIndex: Int
-            let sessionTime: TimeInterval
-            let dirURL: URL
-        }
+    /// What was decided (by either the continuous throttle or a manual
+    /// trigger) needs to actually get written — this is that decision,
+    /// carrying the exact frame it applies to.
+    private struct CaptureDecision {
+        let frameIndex: Int
+        let sessionTime: TimeInterval
+        let dirURL: URL
+        let frame: ARFrameSnapshot
+    }
 
+    func handle(frame: ARFrameSnapshot) {
         let decision: CaptureDecision? = stateLock.withLock { state in
             guard state.isRecording, let dirURL = state.sessionDirectoryURL else { return nil }
-            let sessionTime = frame.nativeTimestamp - state.sessionStartMonotonic
-            guard sessionTime - state.lastCaptureSessionTime >= (1.0 / rgbCaptureRateHz) else { return nil }
-            state.frameIndex += 1
-            state.lastCaptureSessionTime = sessionTime
-            return CaptureDecision(frameIndex: state.frameIndex, sessionTime: sessionTime, dirURL: dirURL)
+
+            switch captureMode {
+            case .manual:
+                // Cache only — triggerManualCapture() decides when to write.
+                state.latestFrameForManualCapture = frame
+                return nil
+            case .continuous:
+                let sessionTime = frame.nativeTimestamp - state.sessionStartMonotonic
+                guard sessionTime - state.lastCaptureSessionTime >= (1.0 / rgbCaptureRateHz) else { return nil }
+                state.frameIndex += 1
+                state.lastCaptureSessionTime = sessionTime
+                return CaptureDecision(frameIndex: state.frameIndex, sessionTime: sessionTime, dirURL: dirURL, frame: frame)
+            }
         }
 
         guard let decision else { return }
+        performCapture(decision)
+    }
 
+    /// Called from the "Capture" button (main thread) in `.manual` mode.
+    /// Writes whatever frame ARKit most recently delivered. A no-op if not
+    /// currently recording in manual mode, or if no frame has arrived yet
+    /// (e.g. tapped in the first instant after Start).
+    func triggerManualCapture() {
+        let decision: CaptureDecision? = stateLock.withLock { state in
+            guard
+                state.isRecording,
+                captureMode == .manual,
+                let dirURL = state.sessionDirectoryURL,
+                let frame = state.latestFrameForManualCapture
+            else { return nil }
+
+            let sessionTime = frame.nativeTimestamp - state.sessionStartMonotonic
+            state.frameIndex += 1
+            state.lastCaptureSessionTime = sessionTime
+            return CaptureDecision(frameIndex: state.frameIndex, sessionTime: sessionTime, dirURL: dirURL, frame: frame)
+        }
+
+        guard let decision else { return }
+        performCapture(decision)
+    }
+
+    private func performCapture(_ decision: CaptureDecision) {
+        let frame = decision.frame
         let frameIDString = String(format: "%06d", decision.frameIndex)
         let utcTimestamp = Date()
         let dirURL = decision.dirURL

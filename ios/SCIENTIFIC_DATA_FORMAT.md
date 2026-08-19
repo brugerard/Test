@@ -269,7 +269,7 @@ again — overwriting the first — when recording stops, with final counts.
 | `sessionStartUTC`, `sessionEndUTC` | ISO 8601. `sessionEndUTC` is `null` in the start-of-session copy |
 | `deviceHardwareIdentifier` | Raw identifier from `uname()`, e.g. `"iPhone15,2"` (an iPhone 14 Pro) — not translated to a marketing name, so it stays accurate as new hardware ships |
 | `systemVersion` | iOS version |
-| `recordingConfiguration` | `{rgbFormat, rgbCaptureRateHz, depthFormat, depthType, confidenceFormat}` |
+| `recordingConfiguration` | `{rgbFormat, rgbCaptureRateHz, captureMode, depthFormat, depthType, confidenceFormat}` — `captureMode` is `"continuous"` or `"manual"` (Section 11.1); `rgbCaptureRateHz` is meaningless for a `"manual"` session (frames are irregular, operator-triggered) |
 | `coordinateSystems` | Human-readable description of each coordinate system in use (Section 3), embedded so the dataset is self-describing even without this file |
 | `units` | Same idea, for units (Section 8) |
 | `sensorAvailability` | `{camera, lidarSceneDepth}` as booleans — booleans for motion/location/barometer arrive with those phases |
@@ -300,6 +300,31 @@ error message is shown in the recording health panel.
   throttled by comparing each AR frame's `sessionTimeSeconds` to the last
   captured frame's. Depth is captured in lockstep with RGB (same `ARFrame`),
   not on an independent schedule — see Section 2.
+
+### 11.1 Capture mode: Continuous vs. Manual
+
+Chosen before START RECORDING (a segmented control on the main screen;
+`RecordingSessionManager.captureMode`, not safe to change mid-session) and
+recorded in `metadata.json`'s `recordingConfiguration.captureMode`:
+
+- **`"continuous"`** (default): the behavior described above — auto-capture
+  throttled to `rgbCaptureRateHz`. Frame timing is regular
+  (`sessionTimeSeconds` deltas ≈ `1/rgbCaptureRateHz`).
+- **`"manual"`**: nothing is captured automatically. A CAPTURE button
+  writes exactly one RGB+depth+sensor snapshot per tap, from whichever AR
+  frame ARKit most recently delivered at that instant (typically within one
+  frame interval, ~16ms, of the tap — not the tap's own wall-clock moment).
+  Frame timing is irregular and operator-driven; `frameID`s are still
+  sequential and gapless, same file layout, same `frames.csv`/depth-JSON
+  schema — a session recorded this way is not distinguishable file-format-wise
+  from a sparse continuous one except via `recordingConfiguration.captureMode`.
+
+Manual mode exists because continuous capture-while-moving produces motion
+blur and heavy frame-to-frame overlap (adjacent frames of a slowly-panned
+scene are nearly identical, which shows up as streaky, doubled geometry when
+multiple frames' point clouds are merged — see `../macos/BG_Viewer`).
+Deliberate stand-still-and-tap capture — closer to traditional photogrammetry
+workflow — trades data density for per-frame sharpness and reduced redundancy.
 - All disk I/O (HEIC encode, raw binary writes, JSON, CSV append) happens on
   a dedicated `DataWriter` actor, off both the main thread and ARKit's
   delegate callback thread, so recording never blocks the UI or frame

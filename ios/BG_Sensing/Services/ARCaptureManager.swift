@@ -5,12 +5,16 @@ import ARKit
 /// Depth statistics computed from a single ARKit scene-depth frame.
 ///
 /// For Phase 1 this is a coarse, sampled summary used only to verify on-device
-/// that LiDAR scene depth is being produced. Later phases persist the full
-/// Float32 depth map instead of these statistics.
+/// that LiDAR scene depth is being produced. Recording (Phase 2+) persists the
+/// full Float32 depth map instead, via `ARFrameSnapshot` below.
 struct DepthFrameStats {
-    /// ARKit's frame timestamp: seconds since the ARSession started (`CACurrentMediaTime`
-    /// domain). This is monotonic but is NOT wall-clock/UTC time. Phase 6 maps this onto
-    /// the shared recording-session timeline defined at "START RECORDING".
+    /// `ARFrame.timestamp`: seconds since device boot — the same monotonic clock
+    /// domain as `CACurrentMediaTime()` / `ProcessInfo.processInfo.systemUptime`,
+    /// and (per Apple's docs) the same domain Core Motion's sample timestamps use.
+    /// It is NOT reset when the ARSession starts/restarts, and it is NOT wall-clock
+    /// UTC time. `RecordingSessionManager` maps it onto the recording's own
+    /// `sessionTimeSeconds` timeline by subtracting the boot-relative time captured
+    /// at "START RECORDING".
     let timestamp: TimeInterval
     let width: Int
     let height: Int
@@ -19,6 +23,31 @@ struct DepthFrameStats {
     let meanDepthMeters: Float
     let validSampleCount: Int
     let sampledCount: Int
+}
+
+/// Everything `RecordingSessionManager` needs from one `ARFrame`, extracted
+/// synchronously in the session delegate callback so the manager never has to
+/// retain the `ARFrame` itself (ARFrame instances are comparatively heavy —
+/// holding onto them past their callback is a well-known source of memory
+/// pressure in ARKit apps).
+///
+/// `@unchecked Sendable`: `CVPixelBuffer` is a Core Foundation type that is safe
+/// to pass across threads for read-only use (which is all recording does with
+/// it); the simd matrix types and `ARTrackingSummary` are plain value types.
+struct ARFrameSnapshot: @unchecked Sendable {
+    let nativeTimestamp: TimeInterval
+    let capturedImage: CVPixelBuffer
+    let imageWidth: Int
+    let imageHeight: Int
+    let intrinsics: simd_float3x3
+    let cameraTransform: simd_float4x4
+    let trackingSummary: ARTrackingSummary
+    let exposureDuration: TimeInterval
+    let exposureOffset: Float
+    let depthMap: CVPixelBuffer?
+    let confidenceMap: CVPixelBuffer?
+    let depthWidth: Int
+    let depthHeight: Int
 }
 
 /// Human-readable summary of `ARCamera.TrackingState`, safe to publish to SwiftUI.
@@ -32,19 +61,28 @@ enum ARTrackingSummary: String {
     case unknown = "Unknown"
 }
 
-/// Owns the `ARSession` and all AR acquisition logic for Phase 1: starting/stopping
-/// world tracking with scene depth, and reporting live tracking/depth status.
+/// Owns the `ARSession` and all AR acquisition logic: starting/stopping world
+/// tracking with scene depth, reporting live tracking/depth status, and (from
+/// Phase 2) handing each frame to whoever wants to record it.
 ///
 /// SwiftUI views only read `@Published` state from this object; they never touch
 /// ARKit types directly. ARSession delegate callbacks arrive on ARKit's own
-/// background delegate queue, so depth-map sampling here happens off the main
-/// thread; only the final published values are marshalled back to the main
-/// thread for UI consumption.
+/// background delegate queue, so depth-map sampling and `frameHandler` here
+/// happen off the main thread; only the final published values (for the status
+/// overlay) are marshalled back to the main thread. This deliberately keeps
+/// ARCaptureManager ignorant of *whether* or *how* recording happens — it just
+/// reports frames; `RecordingSessionManager` decides what to do with them.
 final class ARCaptureManager: NSObject, ObservableObject {
 
     /// Shared session instance. `ARCameraPreviewView` binds an `ARSCNView` to this
     /// same session purely for rendering; it never calls `run`/`pause` itself.
     let session = ARSession()
+
+    /// Invoked on ARKit's background delegate queue for every frame, regardless
+    /// of recording state — `RecordingSessionManager` is responsible for deciding
+    /// whether/how often to act on it. Must not block: do cheap work only, or
+    /// hand off to something async (e.g. an actor).
+    var frameHandler: ((ARFrameSnapshot) -> Void)?
 
     @Published private(set) var isSessionRunning = false
     @Published private(set) var isLiDARAvailable = false
@@ -101,6 +139,28 @@ extension ARCaptureManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let stats = Self.computeDepthStats(from: frame, stride: depthSampleStride)
         let tracking = Self.summarize(frame.camera.trackingState)
+
+        if let frameHandler {
+            let depthMap = frame.sceneDepth?.depthMap
+            let confidenceMap = frame.sceneDepth?.confidenceMap
+            frameHandler(
+                ARFrameSnapshot(
+                    nativeTimestamp: frame.timestamp,
+                    capturedImage: frame.capturedImage,
+                    imageWidth: CVPixelBufferGetWidth(frame.capturedImage),
+                    imageHeight: CVPixelBufferGetHeight(frame.capturedImage),
+                    intrinsics: frame.camera.intrinsics,
+                    cameraTransform: frame.camera.transform,
+                    trackingSummary: tracking,
+                    exposureDuration: frame.exposureDuration,
+                    exposureOffset: frame.exposureOffset,
+                    depthMap: depthMap,
+                    confidenceMap: confidenceMap,
+                    depthWidth: depthMap.map(CVPixelBufferGetWidth) ?? 0,
+                    depthHeight: depthMap.map(CVPixelBufferGetHeight) ?? 0
+                )
+            )
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

@@ -38,6 +38,14 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: "This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
+
+        # Makes recorded sessions (in the app's Documents/Sessions folder)
+        # browsable from a Mac via Finder (device > BG_Sensing) and from the
+        # Files app on the phone, without needing the Phase 7 export/share
+        # flow. Useful now for verifying Phase 2's recorded files read back
+        # correctly.
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
     scheme:
       testTargets: []
       gatherCoverageData: false

@@ -1,4 +1,4 @@
-# BG_Sensing — Xcode Project Setup (Phase 1)
+# BG_Sensing — Xcode Project Setup
 
 There is no `.xcodeproj` committed to this repo — it's a generated artifact
 (see "Why generated, not committed" below). Generate it with **XcodeGen**
@@ -123,7 +123,9 @@ a project by hand:
    Source to `AppIcon` (from the added asset catalog).
 6. Set deployment target iOS 16.0 and your signing team.
 
-## What to test on the iPhone (Phase 1)
+## What to test on the iPhone
+
+### Phase 1 (camera/LiDAR preview — should still work)
 
 1. The app launches and shows a **live camera feed** filling the screen.
 2. The status overlay top-left shows:
@@ -134,18 +136,54 @@ a project by hand:
      initialize).
    - **AR frames received**: should be climbing continuously.
    - **Depth (m)**: min/mean/max should update continuously and report
-     plausible values (e.g. mean depth roughly matching the distance from
-     the phone to whatever it's pointed at, min not close to 0 unless
-     something is right against the lens).
+     plausible values.
 3. Point the phone at a nearby object vs. a far wall and confirm the mean
-   depth value changes accordingly — this is the sanity check that scene
-   depth is real, live LiDAR data and not a stale/placeholder buffer.
+   depth value changes accordingly.
 4. Confirm the app icon (radar/pulse mark) shows correctly on the Home
    Screen after install.
 
+### Phase 2 (recording)
+
+1. Tap **START RECORDING** (large green button at the bottom). It should
+   turn into a red **STOP RECORDING** button, and a "● RECORDING" health
+   panel should appear showing elapsed time, RGB/depth frame counts ticking
+   up (roughly 5/second), dropped-frame count, and disk-error count (both
+   should stay at 0 in normal conditions).
+2. Move the phone around for 15–30 seconds — walk to a different part of the
+   room, point at objects at different distances — then tap **STOP
+   RECORDING**.
+3. **Verify the files exist and read back correctly.** With the iPhone
+   connected to your Mac: open **Finder → your iPhone → Files → BG_Sensing**
+   (file sharing is enabled specifically so you can do this without
+   building the Phase 7 export feature first). You should see
+   `Sessions/Session_<date>_<uuid>/` with `metadata.json`, `rgb/`, `depth/`,
+   `sensors/frames.csv` inside. Drag that session folder to your Mac.
+4. Quick read-back check (needs Python 3 + numpy: `pip3 install numpy` if
+   you don't have it) — run from the folder containing the session:
+   ```bash
+   python3 - "Session_<date>_<uuid>/depth/depth_000001.json" "Session_<date>_<uuid>/depth/depth_000001.bin" <<'EOF'
+   import json, sys, numpy as np
+   meta_path, bin_path = sys.argv[1], sys.argv[2]
+   meta = json.load(open(meta_path))
+   arr = np.fromfile(bin_path, dtype="<f4").reshape(meta["height"], meta["width"])
+   print("shape:", arr.shape, "dtype:", arr.dtype)
+   print("min/mean/max (m):", np.nanmin(arr), np.nanmean(arr), np.nanmax(arr))
+   print("intrinsics:", meta["intrinsics"])
+   EOF
+   ```
+   This should print a sensible shape (e.g. `(192, 256)`) and depth values
+   in a plausible range for whatever the camera was pointed at when that
+   frame was captured. Also open `rgb/frame_000001.heic` in Preview to
+   confirm it's a real (if sideways — see the orientation note in
+   `SCIENTIFIC_DATA_FORMAT.md` §6) photo, and skim `sensors/frames.csv` and
+   `metadata.json` in a text editor.
+5. Try recording again without force-quitting the app in between — confirm
+   a second, distinct session folder is created and the frame counters reset
+   to 0 at the start of the new recording.
+
 ## Next phase
 
-Once you've confirmed the above on the physical device, Phase 2 adds actual
-recording: writing RGB frames + full-resolution depth maps + intrinsics/pose
-to disk. Let me know how the Phase 1 test goes (and paste any Xcode compiler
-errors) and I'll proceed.
+Once you've confirmed both of the above on the physical device, Phase 3
+adds Core Motion (attitude, acceleration, gyroscope, magnetometer at
+~50 Hz). Let me know how the Phase 2 test goes (and paste any Xcode
+compiler errors) and I'll proceed.

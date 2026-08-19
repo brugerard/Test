@@ -62,18 +62,39 @@ iOS will prompt for camera permission — allow it.
 
 ## Info.plist
 
-There's no physical `Info.plist` file in the source tree. The target uses
-`GENERATE_INFOPLIST_FILE: YES` with `INFOPLIST_KEY_*` build settings in
-`project.yml` — this is Xcode's own default mechanism for new projects
-(Xcode 13+), and is what actually gets the camera usage description
-correctly baked into the built app. (An earlier version of this project
-used an explicit `Info.plist` file wired up via XcodeGen's `info.path`;
-that silently failed to carry `NSCameraUsageDescription` into the build on
-at least one XcodeGen setup, causing an immediate launch-time crash with no
-permission prompt. The build-setting approach avoids that file-linking step
-entirely.) To see or change Info.plist values, edit the
-`INFOPLIST_KEY_*` entries directly in `project.yml`, or use Xcode's target →
-**Info** tab after generating — either one is reflected in the build.
+There's no physical `Info.plist` file in the source tree. All Info.plist
+keys live in one place: the `targets.BG_Sensing.info.properties` dict in
+`project.yml`. XcodeGen generates the actual plist file from that dict and
+wires it up itself. To see or change any Info.plist value, edit that dict
+directly — do not add keys via Xcode's Info tab UI, since those edits live
+in the generated (gitignored) `.xcodeproj` and get discarded the next time
+someone runs `xcodegen generate`.
+
+This project has actually gone through three different Info.plist
+mechanisms, each time because the previous one silently dropped a key
+without any build error:
+1. An explicit physical `Info.plist` file wired via XcodeGen's `info.path`
+   — silently failed to carry `NSCameraUsageDescription` into the build
+   (a path-resolution issue), causing an immediate launch-time crash with
+   no permission prompt.
+2. `GENERATE_INFOPLIST_FILE: YES` + individual `INFOPLIST_KEY_*` build
+   settings — this correctly carried `NSCameraUsageDescription` (confirmed
+   working: the camera permission prompt appeared and recording worked),
+   but `UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace` silently
+   didn't take even after a full clean rebuild + delete + reinstall.
+3. **Current**: XcodeGen's own `info.properties`, which XcodeGen generates
+   and references itself. If you hit a similar "key silently missing"
+   symptom again after this, it's worth checking `project.yml`'s comment
+   above the `info:` block for the current story.
+
+**After pulling this change, you must do a full clean + reinstall, not
+just rebuild** — Xcode won't reliably notice a plist-generation-mechanism
+change otherwise: **Product → Clean Build Folder** (⇧⌘K), delete the
+BG_Sensing app from your iPhone, then run again. Re-verify **both**
+things this time: the camera permission prompt / live preview still work
+(regression check — this switched mechanisms again), and `BG_Sensing`
+now appears under Files → **On My iPhone** on the phone (the thing that
+was actually broken).
 
 ## App icon
 

@@ -28,24 +28,42 @@ targets:
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
 
-        # Info.plist is Xcode-generated from these INFOPLIST_KEY_* build
-        # settings rather than from a physical Info.plist file. This is
-        # Xcode's own default mechanism for new projects (Xcode 13+) and
-        # is more reliable across XcodeGen versions than wiring up an
-        # explicit Info.plist file path — that approach silently failed
-        # to carry NSCameraUsageDescription into the built app for us.
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_NSCameraUsageDescription: "This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection."
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
-
+    # Info.plist: XcodeGen generates and wires up the plist file itself from
+    # this `properties` dict (GENERATE_INFOPLIST_FILE is set to NO
+    # automatically). This is the third mechanism this project has tried:
+    #   1. An explicit physical Info.plist file wired via `info.path` —
+    #      silently failed to carry NSCameraUsageDescription into the build
+    #      (a path-resolution issue with an externally-authored file).
+    #   2. GENERATE_INFOPLIST_FILE + individual INFOPLIST_KEY_* build
+    #      settings — worked for NSCameraUsageDescription/UILaunchScreen_
+    #      Generation/UISupportedInterfaceOrientations, but
+    #      UIFileSharingEnabled/LSSupportsOpeningDocumentsInPlace silently
+    #      didn't take even after a clean rebuild + reinstall.
+    #   3. This: XcodeGen's own `info.properties`, which it generates and
+    #      references itself rather than us pointing at a path or hoping a
+    #      given key is on some INFOPLIST_KEY_ shortlist. All Info.plist
+    #      keys now live in exactly one place, below.
+    info:
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection."
         # Makes recorded sessions (in the app's Documents/Sessions folder)
         # browsable from a Mac via Finder (device > BG_Sensing) and from the
         # Files app on the phone, without needing the Phase 7 export/share
-        # flow. Useful now for verifying Phase 2's recorded files read back
-        # correctly.
-        INFOPLIST_KEY_UIFileSharingEnabled: YES
-        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        # flow.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     scheme:
       testTargets: []
       gatherCoverageData: false

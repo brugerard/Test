@@ -76,3 +76,53 @@ targets:
     scheme:
       testTargets: []
       gatherCoverageData: false
+
+  # BG_Sensing V2: a second, independent app — NOT a replacement for
+  # BG_Sensing above. It has its own bundle ID so it installs side by side
+  # with V1 on the same iPhone, and its own source folder
+  # (`BG_Sensing_V2/`, a divergent copy of `BG_Sensing/`) so V2 experiments
+  # (adaptive scan capture, bounded write queue, mesh/smoothed-depth
+  # capture, etc.) can never regress the V1 app. See
+  # `SCIENTIFIC_DATA_FORMAT_V2.md` for what's different about its data.
+  BG_Sensing_V2:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: BG_Sensing_V2
+        excludes:
+          - "**/.gitkeep"
+    settings:
+      base:
+        PRODUCT_NAME: BG_Sensing_V2
+        PRODUCT_BUNDLE_IDENTIFIER: com.brugerard.bgsensing2
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+    info:
+      path: Info_V2.plist
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        # Shown under the Home Screen icon — distinguishes it from V1's
+        # "BG_Sensing" without needing a different CFBundleName/module name.
+        CFBundleDisplayName: "BG_Sensing V2"
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "This app uses the camera together with ARKit to record RGB imagery and LiDAR depth for scientific data collection."
+        NSMotionUsageDescription: "This app uses device motion sensors (attitude, acceleration, gyroscope, magnetometer) for scientific data collection during recording sessions."
+        NSLocationWhenInUseUsageDescription: "This app records GPS location, altitude, and compass heading alongside camera/LiDAR data for scientific data collection during recording sessions."
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    scheme:
+      testTargets: []
+      gatherCoverageData: false

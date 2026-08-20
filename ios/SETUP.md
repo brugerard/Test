@@ -20,14 +20,26 @@ cd ios
 xcodegen generate
 ```
 
-This reads `project.yml` and the `BG_Sensing/` source folder (already in
-the repo) and produces `BG_Sensing.xcodeproj`, wired up with:
-- all Swift files under `BG_Sensing/App`, `Views`, `Services`, `Models`
-- an Xcode-generated Info.plist (see "Info.plist" below) with the camera
-  usage description already set
-- `BG_Sensing/Assets.xcassets/AppIcon.appiconset` as the app icon
-- deployment target iOS 16.0, iPhone-only, automatic code signing
-- a default `BG_Sensing` scheme, ready to run
+This reads `project.yml` and produces one `BG_Sensing.xcodeproj` containing
+**two independent app targets/schemes**:
+- **`BG_Sensing`** (V1) — from `BG_Sensing/App`, `Views`, `Services`, `Models`,
+  bundle ID `com.brugerard.bgsensing`. Frozen; not touched by V2 work.
+- **`BG_Sensing_V2`** — from the separate `BG_Sensing_V2/` source folder (a
+  divergent copy of V1's), bundle ID `com.brugerard.bgsensing2`, Home Screen
+  name "BG_Sensing V2". Where the ChatGPT-assessment-driven capture-quality
+  work (adaptive scan capture, bounded write queue, mesh/smoothed depth,
+  high-res texture keyframes — see `SCIENTIFIC_DATA_FORMAT_V2.md`) lands.
+
+Both targets get: an Xcode-generated Info.plist (see "Info.plist" below)
+with the camera/motion/location usage descriptions set, their app icon from
+their own `Assets.xcassets/AppIcon.appiconset`, deployment target iOS 16.0,
+iPhone-only, automatic code signing.
+
+**Known gap**: V2's app icon is currently an unmodified copy of V1's — same
+image, different `CFBundleDisplayName`. That's enough to tell them apart in
+Settings/Spotlight search, but the two icons look identical on the Home
+Screen at a glance. Say if you'd like a visually distinct V2 icon (e.g. a
+badge or color shift) and I'll generate one.
 
 ## 3. Open on your Mac
 
@@ -47,16 +59,23 @@ app from your iPhone before reinstalling.
 
 ## 4. Sign
 
-In Xcode: select the `BG_Sensing` target → **Signing & Capabilities** →
-pick your Apple ID/team under "Team" (Automatic signing). `project.yml`
-doesn't hardcode a team, since that's specific to your Apple Developer
-account.
+In Xcode: select **each** target — `BG_Sensing` and `BG_Sensing_V2` — one at
+a time → **Signing & Capabilities** → pick your Apple ID/team under "Team"
+(Automatic signing). `project.yml` doesn't hardcode a team, since that's
+specific to your Apple Developer account.
 
 ## 5. Deploy to the iPhone
 
 **Run on the physical iPhone 14 Pro, not the Simulator.** The Simulator has
 no camera and no LiDAR — `ARWorldTrackingConfiguration` will report scene
 depth as unsupported and the camera preview will be blank at best.
+
+**Pick the scheme first**: Xcode's scheme selector (top-left, next to the
+run-destination device picker) now has two entries — `BG_Sensing` and
+`BG_Sensing_V2`. Whichever is selected is what ⌘R builds/installs. They
+install as two separate Home Screen apps (different bundle IDs), so running
+one never overwrites or removes the other — install both if you want to
+compare them side by side.
 
 1. **Connect the iPhone to the Mac** with a USB/USB-C cable (fastest and
    most reliable for the first install; wireless is set up in step 5 below).
@@ -324,10 +343,39 @@ just physics.
    `.heading` should be `false` in that session's `metadata.json` — nothing
    should crash or silently pretend GPS data exists.
 
+## BG_Sensing V2 — Step 1 (bounded write queue + drain-on-stop)
+
+Run the `BG_Sensing_V2` scheme. Phases 1–4 behave identically to V1 — same
+tests as above apply — plus this V2-specific fix to verify:
+
+1. **Normal stop, no backpressure** (the common case): start a recording,
+   run it ~15s, tap STOP. The button should briefly show **"FINISHING
+   RECORDING…"** in gray (usually well under a second at normal frame
+   rates) before flipping to the **Share Last Session** button appearing —
+   confirming the new finalize step runs, not that it's slow. Confirm
+   `metadata.json`'s `frameCounts` match the row counts in the CSVs exactly
+   (this should already have been true in V1 most of the time, but V2 now
+   guarantees it rather than racing).
+2. **Rapid stop → start**: tap STOP, and *immediately* tap START again
+   before "FINISHING…" clears. The button should be disabled/ignore the tap
+   until finalizing completes (you'll see `lastErrorMessage` briefly say
+   "Still finishing the previous recording…" if you catch it), then let you
+   start normally right after. This is the fix for the counter-pollution
+   race described in `SCIENTIFIC_DATA_FORMAT_V2.md`'s changelog — confirm
+   the *new* session's `metadata.json` frame counts aren't inflated by
+   leftover writes from the session you just stopped.
+3. **Backpressure / dropped frames** (harder to trigger deliberately): if
+   `droppedFrames` ever climbs above 0 during a normal recording, check that
+   `metadata.json`'s `droppedFrames` matches, and that the app doesn't slow
+   down, hang, or grow unbounded memory (Xcode's Memory gauge while
+   recording) — that's the admission-control cap doing its job instead of
+   the old, non-functional one.
+
 ## Next phase
 
-Once you've confirmed Phases 1–4 on the physical device, Phase 5 adds the
-barometer (`CMAltimeter`: pressure and relative altitude, kept strictly
-separate from GPS altitude — see `SCIENTIFIC_DATA_FORMAT.md` §3). Let me
-know how the Phase 4 test goes (and paste any Xcode compiler errors) and
-I'll proceed.
+Once you've confirmed Phases 1–4 on the physical device (either app) and
+the V2 step-1 behavior above, next up for V2 is adaptive 3D Scan capture
+(translation/rotation-threshold keyframe selection) — see the priority
+order agreed in chat. Phase 5 (barometer) remains queued for V1. Let me
+know how testing goes (and paste any Xcode compiler errors) and I'll
+proceed.

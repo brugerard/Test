@@ -126,6 +126,25 @@ struct ContentView: View {
                     Text("Drops \"flying pixel\" points that straddle a foreground/background edge, and low-confidence LiDAR samples — both are common sources of stray points and streaky noise.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    Toggle("Fuse overlapping points", isOn: Binding(
+                        get: { options.fusionVoxelSize != nil },
+                        set: { options.fusionVoxelSize = $0 ? 0.02 : nil }
+                    ))
+                    if options.fusionVoxelSize != nil {
+                        LabeledContent("Fusion voxel size") {
+                            Slider(
+                                value: Binding(
+                                    get: { options.fusionVoxelSize ?? 0.02 },
+                                    set: { options.fusionVoxelSize = $0 }
+                                ),
+                                in: 0.005...0.06
+                            )
+                        }
+                        Text("Averages points from overlapping frames within each \(String(format: "%.0f", (options.fusionVoxelSize ?? 0.02) * 1000))mm voxel into one — the same object seen from several angles collapses into a single, better-positioned surface instead of showing up in duplicate.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Alignment (merged view)") {
@@ -224,6 +243,7 @@ struct ContentView: View {
         .onChange(of: options.useNormalShading) { rebuildPointCloud(refit: false) }
         .onChange(of: options.minConfidence) { rebuildPointCloud(refit: false) }
         .onChange(of: options.edgeDiscontinuityThreshold) { rebuildPointCloud(refit: false) }
+        .onChange(of: options.fusionVoxelSize) { rebuildPointCloud(refit: false) }
         .onChange(of: options.useICPRefinement) { rebuildPointCloud(refit: false) }
         .onChange(of: options.maxRotationRateAtCapture) { rebuildPointCloud(refit: false) }
     }

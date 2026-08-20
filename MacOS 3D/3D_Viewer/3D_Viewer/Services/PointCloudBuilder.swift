@@ -42,6 +42,19 @@ struct PointCloudBuildOptions {
     /// than just filtering per-point noise. Ignored for single-frame builds
     /// (there's nothing yet to align against).
     var useICPRefinement: Bool = true
+    /// After merging, collapse points into a grid of voxels this size
+    /// (meters) and replace each occupied voxel with the average position
+    /// and color of the points that landed in it. This is the tractable
+    /// core of TSDF-style depth fusion (Curless & Levoy 1996; popularized by
+    /// KinectFusion) without the full signed-distance-grid + marching-cubes
+    /// machinery: overlapping frames observing the same surface each
+    /// contribute a slightly-offset copy of it (sensor noise + residual
+    /// registration error), which is exactly what reads as objects
+    /// "appearing in triplicate" — averaging them together collapses N
+    /// noisy copies into one better-positioned point. nil disables it.
+    /// Applied per-segment (see `MergeSegment`) so disjoint islands are
+    /// never blended into each other. Ignored for single-frame builds.
+    var fusionVoxelSize: Float? = 0.02
 }
 
 struct PointCloudData {
@@ -165,7 +178,89 @@ enum PointCloudBuilder {
         }
         closeSegment(endingAt: result.positions.count)
 
+        if let voxelSize = options.fusionVoxelSize, voxelSize > 0, !result.positions.isEmpty {
+            if segments.isEmpty {
+                // No segment info (ICP off, or the whole scan is one piece
+                // with no closed boundary) — fuse the whole cloud at once.
+                let fused = fuseByVoxelAveraging(positions: result.positions, colors: result.colors, voxelSize: voxelSize)
+                result.positions = fused.positions
+                result.colors = fused.colors
+            } else {
+                var fusedResult = PointCloudData()
+                fusedResult.cameraTrajectory = result.cameraTrajectory
+                var fusedSegments: [MergeSegment] = []
+                fusedSegments.reserveCapacity(segments.count)
+                for segment in segments {
+                    let fused = fuseByVoxelAveraging(
+                        positions: Array(result.positions[segment.pointRange]),
+                        colors: Array(result.colors[segment.pointRange]),
+                        voxelSize: voxelSize
+                    )
+                    let start = fusedResult.positions.count
+                    fusedResult.positions.append(contentsOf: fused.positions)
+                    fusedResult.colors.append(contentsOf: fused.colors)
+                    fusedSegments.append(MergeSegment(
+                        index: segment.index, startFrameID: segment.startFrameID, endFrameID: segment.endFrameID,
+                        frameCount: segment.frameCount, pointRange: start..<fusedResult.positions.count
+                    ))
+                }
+                result = fusedResult
+                segments = fusedSegments
+            }
+        }
+
         return (result, icp?.correctedFrameCount ?? 0, icp?.uncorrectedFrameCount ?? 0, segments)
+    }
+
+    /// Collapses points into `voxelSize`-meter voxels, replacing each
+    /// occupied voxel with the average position and color of the points
+    /// inside it — the tractable core of TSDF-style fusion. See
+    /// `PointCloudBuildOptions.fusionVoxelSize`.
+    private static func fuseByVoxelAveraging(
+        positions: [SIMD3<Float>], colors: [SIMD4<Float>], voxelSize: Float
+    ) -> (positions: [SIMD3<Float>], colors: [SIMD4<Float>]) {
+        guard !positions.isEmpty else { return (positions, colors) }
+
+        struct Accumulator {
+            var positionSum: SIMD3<Float>
+            var colorSum: SIMD4<Float>
+            var count: Float
+        }
+        // Keeps voxel indices non-negative before packing, comfortably
+        // covering room/building-scale extents (mirrors IncrementalICPMap's
+        // VoxelMap — kept as a separate, simpler copy here since this one
+        // only ever needs insert-and-average, not neighbor search).
+        let axisOffset: Int32 = 1 << 15
+        @inline(__always) func voxelKey(_ p: SIMD3<Float>) -> UInt64 {
+            let ix = UInt64(Int32((p.x / voxelSize).rounded(.down)) + axisOffset)
+            let iy = UInt64(Int32((p.y / voxelSize).rounded(.down)) + axisOffset)
+            let iz = UInt64(Int32((p.z / voxelSize).rounded(.down)) + axisOffset)
+            return ix | (iy << 21) | (iz << 42)
+        }
+
+        var buckets: [UInt64: Accumulator] = [:]
+        buckets.reserveCapacity(positions.count / 3)
+        for i in 0..<positions.count {
+            let key = voxelKey(positions[i])
+            if var acc = buckets[key] {
+                acc.positionSum += positions[i]
+                acc.colorSum += colors[i]
+                acc.count += 1
+                buckets[key] = acc
+            } else {
+                buckets[key] = Accumulator(positionSum: positions[i], colorSum: colors[i], count: 1)
+            }
+        }
+
+        var outPositions = [SIMD3<Float>]()
+        var outColors = [SIMD4<Float>]()
+        outPositions.reserveCapacity(buckets.count)
+        outColors.reserveCapacity(buckets.count)
+        for accumulator in buckets.values {
+            outPositions.append(accumulator.positionSum / accumulator.count)
+            outColors.append(accumulator.colorSum / accumulator.count)
+        }
+        return (outPositions, outColors)
     }
 
     /// A fast, sparse pass producing only world-space positions (no color,

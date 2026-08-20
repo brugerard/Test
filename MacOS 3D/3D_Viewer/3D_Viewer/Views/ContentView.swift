@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import simd
 
 enum FrameSelectionMode: String, CaseIterable, Identifiable {
     case single = "Single Frame"
@@ -22,6 +23,8 @@ struct ContentView: View {
     @State private var isBuilding = false
     @State private var frameToken = 0
     @State private var icpStats: (corrected: Int, uncorrected: Int)?
+    @State private var segments: [MergeSegment] = []
+    @State private var highlightSegments = false
 
     @State private var showFileImporter = false
     @StateObject private var cameraCommander = CameraCommander()
@@ -154,6 +157,27 @@ struct ContentView: View {
                     }
                 }
 
+                if segments.count > 1 {
+                    Section("Segments") {
+                        Text("\(segments.count) spatially disjoint pieces — no shared surface was found between them, most often because the capture jumped to a new spot without scanning en route. No amount of alignment can truthfully merge pieces that don't observe anything in common.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Toggle("Highlight segments by color", isOn: $highlightSegments)
+                        ForEach(segments) { segment in
+                            HStack {
+                                Circle()
+                                    .fill(segmentColor(segment.index))
+                                    .frame(width: 10, height: 10)
+                                Text("Frames \(segment.startFrameID)–\(segment.endFrameID)")
+                                Spacer()
+                                Text("\(segment.frameCount) frames")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .font(.callout)
+                        }
+                    }
+                }
+
                 Section("Navigation") {
                     HStack {
                         Text("Zoom")
@@ -216,7 +240,7 @@ struct ContentView: View {
                 )
             } else {
                 PointCloudSceneView(
-                    pointCloud: pointCloud,
+                    pointCloud: displayedPointCloud,
                     pointSize: pointSize,
                     showTrajectory: showTrajectory,
                     frameToken: frameToken,
@@ -283,6 +307,7 @@ struct ContentView: View {
                 await MainActor.run {
                     self.pointCloud = finalResult
                     self.icpStats = nil
+                    self.segments = []
                     self.isBuilding = false
                     if refit { self.frameToken += 1 }
                 }
@@ -290,15 +315,44 @@ struct ContentView: View {
         case .merged:
             let frames = session.depthFrames
             Task.detached(priority: .userInitiated) {
-                let (finalResult, aligned, unaligned) = PointCloudBuilder.buildMergedSession(frames: frames, options: opts)
+                let (finalResult, aligned, unaligned, segments) = PointCloudBuilder.buildMergedSession(frames: frames, options: opts)
                 await MainActor.run {
                     self.pointCloud = finalResult
                     self.icpStats = opts.useICPRefinement ? (aligned, unaligned) : nil
+                    self.segments = segments
                     self.isBuilding = false
                     if refit { self.frameToken += 1 }
                 }
             }
         }
+    }
+
+    private func segmentColor(_ index: Int) -> Color {
+        let c = Colormap.segmentPalette[index % Colormap.segmentPalette.count]
+        return Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))
+    }
+
+    /// The point cloud actually handed to the 3-D view: with segment
+    /// highlighting on, each disjoint piece is tinted by its own color
+    /// (brightness from the original shading preserved) so the "these don't
+    /// actually connect" structure is visible at a glance instead of reading
+    /// as one confusing blob.
+    private var displayedPointCloud: PointCloudData {
+        guard highlightSegments, segments.count > 1 else { return pointCloud }
+        var tinted = pointCloud
+        for segment in segments {
+            let tint = Colormap.segmentPalette[segment.index % Colormap.segmentPalette.count]
+            let upper = min(segment.pointRange.upperBound, tinted.colors.count)
+            guard segment.pointRange.lowerBound < upper else { continue }
+            for i in segment.pointRange.lowerBound..<upper {
+                let orig = tinted.colors[i]
+                let brightness = min(1, (orig.x + orig.y + orig.z) / 3 * 1.6)
+                tinted.colors[i] = SIMD4<Float>(
+                    min(1, tint.x * brightness), min(1, tint.y * brightness), min(1, tint.z * brightness), orig.w
+                )
+            }
+        }
+        return tinted
     }
 }
 

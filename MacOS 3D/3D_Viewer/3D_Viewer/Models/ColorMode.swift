@@ -32,6 +32,19 @@ enum Colormap {
         return SIMD4<Float>(stops.last!.1, 1)
     }
 
+    /// Distinct, well-separated hues for tagging disjoint capture segments
+    /// (see `MergeSegment`) — cycles if there are more segments than colors.
+    static let segmentPalette: [SIMD4<Float>] = [
+        SIMD4<Float>(0.95, 0.30, 0.30, 1), // red
+        SIMD4<Float>(0.20, 0.55, 0.95, 1), // blue
+        SIMD4<Float>(0.25, 0.80, 0.35, 1), // green
+        SIMD4<Float>(0.95, 0.75, 0.15, 1), // yellow
+        SIMD4<Float>(0.75, 0.30, 0.90, 1), // purple
+        SIMD4<Float>(0.95, 0.50, 0.15, 1), // orange
+        SIMD4<Float>(0.20, 0.80, 0.80, 1), // teal
+        SIMD4<Float>(0.90, 0.35, 0.65, 1), // pink
+    ]
+
     static func confidence(_ level: UInt8) -> SIMD4<Float> {
         switch level {
         case 2: return SIMD4<Float>(0.15, 0.85, 0.15, 1) // high

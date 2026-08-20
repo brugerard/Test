@@ -52,6 +52,26 @@ struct PointCloudData {
     var cameraTrajectory: [SIMD3<Float>] = []
 }
 
+/// A run of consecutive frames that never found any geometric overlap with
+/// whatever came before them — i.e. a spatially disjoint "island" in the
+/// merged cloud, most often because the capture jumped to a new location
+/// (walked away without scanning en route) rather than sweeping
+/// continuously. No registration algorithm can truthfully bridge these:
+/// there is no shared surface in the data to align on. Surfacing them
+/// explicitly, instead of silently merging everything into one confusing
+/// blob, is the point — see `PointCloudBuilder.buildMergedSession`.
+struct MergeSegment: Identifiable {
+    let index: Int
+    let startFrameID: Int
+    let endFrameID: Int
+    let frameCount: Int
+    /// Range into the merged `PointCloudData.positions`/`colors` this
+    /// segment's points occupy.
+    let pointRange: Range<Int>
+
+    var id: Int { index }
+}
+
 enum PointCloudBuilder {
     /// Builds (and appends into `into`) the point cloud for one depth frame.
     ///
@@ -75,25 +95,77 @@ enum PointCloudBuilder {
     /// being called once per frame by `ContentView`.
     static func buildMergedSession(
         frames: [DepthFrame], options: PointCloudBuildOptions
-    ) -> (data: PointCloudData, alignedFrameCount: Int, unalignedFrameCount: Int) {
+    ) -> (data: PointCloudData, alignedFrameCount: Int, unalignedFrameCount: Int, segments: [MergeSegment]) {
         var result = PointCloudData()
         let icp = options.useICPRefinement ? IncrementalICPMap() : nil
+
+        var segments: [MergeSegment] = []
+        var segmentStartFrameID: Int?
+        var segmentPointStart = 0
+        var segmentFrameCount = 0
+        var lastFrameID: Int?
+        var lastRawCameraPos: SIMD3<Float>?
+        var lastSessionTime: Double?
+        var isFirstProcessedFrame = true
+
+        func closeSegment(endingAt pointIndex: Int) {
+            guard let startID = segmentStartFrameID, let endID = lastFrameID, segmentFrameCount > 0 else { return }
+            segments.append(MergeSegment(
+                index: segments.count, startFrameID: startID, endFrameID: endID,
+                frameCount: segmentFrameCount, pointRange: segmentPointStart..<pointIndex
+            ))
+        }
 
         for frame in frames {
             if let maxRate = options.maxRotationRateAtCapture, let peak = frame.peakRotationRate, peak > maxRate {
                 continue
             }
             autoreleasepool {
+                let before = result.positions.count
                 let correction = icp.flatMap { map -> (rotation: simd_quatf, translation: SIMD3<Float>)? in
                     let sample = rawWorldSample(frame: frame, options: options, sampleStride: 6)
                     return map.align(sample)
                 }
-                let before = result.positions.count
+
+                // ICP failing to find overlap isn't enough on its own to call
+                // this a new island: briefly panning away from the mapped
+                // area (while barely moving) also fails the correspondence
+                // search, even mid-scan. Only treat it as a genuine capture
+                // gap — the signal we actually care about — when it's paired
+                // with a real physical jump or a long pause since the
+                // previous frame (measured straight from the raw ARKit
+                // poses, independent of ICP). Verified against a real
+                // session: false "boundaries" mid-scan moved <7cm in <5s;
+                // the one genuine jump moved 2.4m over 10.4s.
+                let rawCameraPos = GeometryMath.cameraPosition(frame.info.transform)
+                let gapDistance = lastRawCameraPos.map { simd_distance($0, rawCameraPos) } ?? 0
+                let gapTime = lastSessionTime.map { frame.info.sessionTimeSeconds - $0 } ?? 0
+                let isGenuineGap = gapDistance > 0.5 || gapTime > 5.0
+
+                if icp != nil, correction == nil, !isFirstProcessedFrame, isGenuineGap {
+                    closeSegment(endingAt: before)
+                    segmentStartFrameID = frame.info.depthFrameID
+                    segmentPointStart = before
+                    segmentFrameCount = 0
+                }
+                lastRawCameraPos = rawCameraPos
+                lastSessionTime = frame.info.sessionTimeSeconds
+                if segmentStartFrameID == nil {
+                    segmentStartFrameID = frame.info.depthFrameID
+                    segmentPointStart = before
+                }
+
                 buildUnpooled(frame: frame, options: options, correction: correction, into: &result)
                 icp?.insert(Array(result.positions[before...]))
+
+                segmentFrameCount += 1
+                lastFrameID = frame.info.depthFrameID
+                isFirstProcessedFrame = false
             }
         }
-        return (result, icp?.correctedFrameCount ?? 0, icp?.uncorrectedFrameCount ?? 0)
+        closeSegment(endingAt: result.positions.count)
+
+        return (result, icp?.correctedFrameCount ?? 0, icp?.uncorrectedFrameCount ?? 0, segments)
     }
 
     /// A fast, sparse pass producing only world-space positions (no color,

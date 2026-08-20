@@ -52,13 +52,44 @@ pick your Apple ID/team under "Team" (Automatic signing). `project.yml`
 doesn't hardcode a team, since that's specific to your Apple Developer
 account.
 
-## 5. Run destination
+## 5. Deploy to the iPhone
 
 **Run on the physical iPhone 14 Pro, not the Simulator.** The Simulator has
 no camera and no LiDAR — `ARWorldTrackingConfiguration` will report scene
-depth as unsupported and the camera preview will be blank at best. Connect
-the iPhone, select it as the run destination, press Run. On first launch,
-iOS will prompt for camera permission — allow it.
+depth as unsupported and the camera preview will be blank at best.
+
+1. **Connect the iPhone to the Mac** with a USB/USB-C cable (fastest and
+   most reliable for the first install; wireless is set up in step 5 below).
+2. **Trust this computer** if prompted on the phone (tap **Trust** and enter
+   the passcode) — only appears the first time this Mac connects.
+3. **Enable Developer Mode on the iPhone** if you haven't already (iOS 16+
+   requires this before it will run any Xcode-built app): Settings →
+   Privacy & Security → **Developer Mode** → toggle on → the phone will ask
+   to restart → after it reboots, confirm **Turn On** in the dialog that
+   appears. If this setting isn't visible yet, it appears automatically the
+   first time Xcode tries to install a build on the device — just do step 4
+   once and come back to it.
+4. **Select the iPhone as the run destination** in Xcode's toolbar (device
+   dropdown next to the scheme, top-left) — it should be listed by name
+   once connected and trusted. Press **Run** (▶ or ⌘R).
+5. **First install on this phone from this Mac**: Xcode will build, sign,
+   and install the app, then it should launch automatically. If the app
+   installs but refuses to open ("Untrusted Developer"), go to Settings →
+   General → VPN & Device Management → tap your Apple ID/team under
+   **Developer App** → **Trust**, then relaunch from the Home Screen.
+6. **Permission prompts**: on first launch iOS will ask for Camera, Motion &
+   Fitness, and Location ("While Using the App") permissions at various
+   points as each subsystem starts — allow all of them, otherwise that
+   sensor will be correctly-but-uselessly reported as unavailable rather
+   than crashing (see the Phase 3/4 "permission-denied path" tests below if
+   you want to verify that behavior deliberately instead).
+7. **Optional — wireless installs after the first one**: Xcode → Window →
+   **Devices and Simulators** → select the iPhone → check **Connect via
+   network**. After that, as long as the phone and Mac are on the same
+   Wi-Fi, you can unplug the cable and Xcode will still find it as a run
+   destination (slower than USB, but convenient for repeated test cycles —
+   USB is still recommended for the very first install and for large data
+   pulls).
 
 ## Info.plist
 

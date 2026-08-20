@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var icpStats: (corrected: Int, uncorrected: Int)?
 
     @State private var showFileImporter = false
+    @StateObject private var cameraCommander = CameraCommander()
 
     var body: some View {
         NavigationSplitView {
@@ -153,7 +154,33 @@ struct ContentView: View {
                     }
                 }
 
-                Section {
+                Section("Navigation") {
+                    HStack {
+                        Text("Zoom")
+                        Spacer()
+                        NavButton("minus.magnifyingglass") { cameraCommander.zoom(-0.4) }
+                        NavButton("plus.magnifyingglass") { cameraCommander.zoom(0.4) }
+                    }
+                    LabeledContent("Orbit / tilt") {
+                        DirectionalPad(
+                            up: { cameraCommander.orbit(dx: 0, dy: -12) },
+                            down: { cameraCommander.orbit(dx: 0, dy: 12) },
+                            left: { cameraCommander.orbit(dx: -12, dy: 0) },
+                            right: { cameraCommander.orbit(dx: 12, dy: 0) }
+                        )
+                    }
+                    LabeledContent("Slide") {
+                        // The camera itself moves in the pressed direction
+                        // (like walking that way), so the scene appears to
+                        // shift the opposite way on screen.
+                        DirectionalPad(
+                            symbols: ("arrow.up", "arrow.down", "arrow.left", "arrow.right"),
+                            up: { cameraCommander.pan(dx: 0, dy: 0.15) },
+                            down: { cameraCommander.pan(dx: 0, dy: -0.15) },
+                            left: { cameraCommander.pan(dx: -0.15, dy: 0) },
+                            right: { cameraCommander.pan(dx: 0.15, dy: 0) }
+                        )
+                    }
                     Button("Fit Camera to Cloud") { frameToken += 1 }
                 }
 
@@ -192,7 +219,8 @@ struct ContentView: View {
                     pointCloud: pointCloud,
                     pointSize: pointSize,
                     showTrajectory: showTrajectory,
-                    frameToken: frameToken
+                    frameToken: frameToken,
+                    commander: cameraCommander
                 )
                 .ignoresSafeArea()
             }
@@ -277,6 +305,47 @@ struct ContentView: View {
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+/// A single small square icon button, sized consistently for `DirectionalPad`.
+private struct NavButton: View {
+    let systemImage: String
+    let action: () -> Void
+
+    init(_ systemImage: String, action: @escaping () -> Void) {
+        self.systemImage = systemImage
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.bordered)
+    }
+}
+
+/// Four discrete direction buttons (up/down/left/right) laid out in a plus
+/// shape, for stepwise orbit/tilt or pan/slide control without needing a
+/// trackpad gesture.
+private struct DirectionalPad: View {
+    var symbols: (up: String, down: String, left: String, right: String) = ("chevron.up", "chevron.down", "chevron.left", "chevron.right")
+    let up: () -> Void
+    let down: () -> Void
+    let left: () -> Void
+    let right: () -> Void
+
+    var body: some View {
+        VStack(spacing: 2) {
+            NavButton(symbols.up, action: up)
+            HStack(spacing: 2) {
+                NavButton(symbols.left, action: left)
+                NavButton(symbols.right, action: right)
+            }
+            NavButton(symbols.down, action: down)
+        }
     }
 }
 

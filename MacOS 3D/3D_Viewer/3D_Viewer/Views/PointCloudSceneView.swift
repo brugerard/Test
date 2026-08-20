@@ -11,6 +11,9 @@ struct PointCloudSceneView: NSViewRepresentable {
     var showTrajectory: Bool
     /// Bumped by the caller to force a re-frame of the camera (e.g. "Fit" button).
     var frameToken: Int
+    /// Exposes this view's `SCNView` to the sidebar's discrete zoom/orbit/pan
+    /// buttons — see `CameraCommander`.
+    var commander: CameraCommander
 
     func makeNSView(context: Context) -> SCNView {
         let view = SCNView()
@@ -21,6 +24,7 @@ struct PointCloudSceneView: NSViewRepresentable {
         view.antialiasingMode = .multisampling4X
         view.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
         context.coordinator.lastFrameToken = frameToken
+        commander.scnView = view
         rebuild(view: view, context: context, refit: true)
         return view
     }
@@ -177,9 +181,43 @@ struct PointCloudSceneView: NSViewRepresentable {
             cameraNode.camera = camera
             view.scene?.rootNode.addChildNode(cameraNode)
         }
+        // A 3/4 elevated default angle (rather than dead-on from the front)
+        // reads as "up the right way" far more reliably than a horizontal
+        // eye line, and shows the floor/ceiling relationship immediately.
         let distance = radius * 2.5
-        cameraNode.position = SCNVector3(center.x, center.y, center.z + distance)
-        cameraNode.look(at: SCNVector3(center.x, center.y, center.z))
+        let eyeDirection = simd_normalize(SIMD3<Float>(0.35, 0.55, 0.85))
+        let eye = center + eyeDirection * distance
+        cameraNode.position = SCNVector3(eye.x, eye.y, eye.z)
+        // The explicit up/localFront overload avoids `look(at:)`'s ambiguous
+        // default-up resolution, which was producing an upside-down initial
+        // view for some sessions — world +Y (ARKit's own gravity-aligned
+        // "up", per SCIENTIFIC_DATA_FORMAT.md) is always what should read as
+        // up on screen.
+        cameraNode.look(at: SCNVector3(center.x, center.y, center.z), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 0, -1))
         view.pointOfView = cameraNode
+    }
+}
+
+/// Lets SwiftUI buttons drive the same `SCNCameraController` that trackpad
+/// gestures use (via `SCNView.allowsCameraControl`), instead of fighting its
+/// internal orbit state by nudging the camera node's transform directly.
+final class CameraCommander: ObservableObject {
+    fileprivate weak var scnView: SCNView?
+
+    func zoom(_ delta: Float) {
+        guard let scnView else { return }
+        let viewport = scnView.bounds.size
+        let center = CGPoint(x: viewport.width / 2, y: viewport.height / 2)
+        scnView.defaultCameraController.dolly(by: delta, onScreenPoint: center, viewport: viewport)
+    }
+
+    /// Orbits (and, via `dy`, tilts) around the current target.
+    func orbit(dx: Float, dy: Float) {
+        scnView?.defaultCameraController.rotateBy(x: dx, y: dy)
+    }
+
+    /// Slides the camera and its target together, in camera-local space.
+    func pan(dx: Float, dy: Float) {
+        scnView?.defaultCameraController.translateInCameraSpaceBy(x: dx, y: dy, z: 0)
     }
 }

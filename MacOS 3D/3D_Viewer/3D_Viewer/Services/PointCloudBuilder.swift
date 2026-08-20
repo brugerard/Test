@@ -30,6 +30,18 @@ struct PointCloudBuildOptions {
     /// surface versus a scattering of confetti; this is the single biggest
     /// lever for making the cloud look like a coherent object.
     var useNormalShading: Bool = true
+    /// Skip a frame entirely if `motion.csv` recorded angular velocity above
+    /// this (radians/second) within ~0.15s of its capture — a fast pan both
+    /// motion-blurs the RGB shutter and degrades ARKit's own pose estimate
+    /// for that instant. nil disables the filter (also a no-op for sessions
+    /// that predate motion.csv, where every frame's rate is unknown).
+    var maxRotationRateAtCapture: Float? = 1.5
+    /// When merging multiple frames, re-align each new frame's points
+    /// against everything merged so far (a bounded ICP pass) before adding
+    /// it, correcting small ARKit pose-drift errors between frames rather
+    /// than just filtering per-point noise. Ignored for single-frame builds
+    /// (there's nothing yet to align against).
+    var useICPRefinement: Bool = true
 }
 
 struct PointCloudData {
@@ -51,11 +63,83 @@ enum PointCloudBuilder {
     /// into the multi-gigabyte range.
     static func build(frame: DepthFrame, options: PointCloudBuildOptions, into result: inout PointCloudData) {
         autoreleasepool {
-            buildUnpooled(frame: frame, options: options, into: &result)
+            buildUnpooled(frame: frame, options: options, correction: nil, into: &result)
         }
     }
 
-    private static func buildUnpooled(frame: DepthFrame, options: PointCloudBuildOptions, into result: inout PointCloudData) {
+    /// Builds a whole session's merged point cloud, optionally re-aligning
+    /// each frame against everything merged so far via `IncrementalICPMap`
+    /// and skipping frames captured during fast device rotation. Frame order
+    /// matters here (each frame aligns against the frames before it), unlike
+    /// the plain per-frame `build`, so this owns its own loop rather than
+    /// being called once per frame by `ContentView`.
+    static func buildMergedSession(
+        frames: [DepthFrame], options: PointCloudBuildOptions
+    ) -> (data: PointCloudData, alignedFrameCount: Int, unalignedFrameCount: Int) {
+        var result = PointCloudData()
+        let icp = options.useICPRefinement ? IncrementalICPMap() : nil
+
+        for frame in frames {
+            if let maxRate = options.maxRotationRateAtCapture, let peak = frame.peakRotationRate, peak > maxRate {
+                continue
+            }
+            autoreleasepool {
+                let correction = icp.flatMap { map -> (rotation: simd_quatf, translation: SIMD3<Float>)? in
+                    let sample = rawWorldSample(frame: frame, options: options, sampleStride: 6)
+                    return map.align(sample)
+                }
+                let before = result.positions.count
+                buildUnpooled(frame: frame, options: options, correction: correction, into: &result)
+                icp?.insert(Array(result.positions[before...]))
+            }
+        }
+        return (result, icp?.correctedFrameCount ?? 0, icp?.uncorrectedFrameCount ?? 0)
+    }
+
+    /// A fast, sparse pass producing only world-space positions (no color,
+    /// no shading, no RGB decode) for ICP correspondence-finding — the same
+    /// depth/confidence/edge filters as the full build, just without the
+    /// expensive per-point extras that finding a rigid alignment doesn't need.
+    private static func rawWorldSample(frame: DepthFrame, options: PointCloudBuildOptions, sampleStride: Int) -> [SIMD3<Float>] {
+        let info = frame.info
+        guard let depthData = try? Data(contentsOf: frame.binURL) else { return [] }
+        let width = info.width
+        let height = info.height
+        let expectedCount = width * height
+        guard depthData.count >= expectedCount * MemoryLayout<Float32>.size else { return [] }
+        let depths: [Float32] = depthData.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: Float32.self).prefix(expectedCount))
+        }
+        var confidences: [UInt8]?
+        if let confURL = frame.confidenceURL, let confData = try? Data(contentsOf: confURL),
+           confData.count >= expectedCount {
+            confidences = confData.withUnsafeBytes { raw in
+                Array(raw.bindMemory(to: UInt8.self).prefix(expectedCount))
+            }
+        }
+        let k = GeometryMath.intrinsics(info.intrinsics)
+        let worldFromCamera = GeometryMath.worldFromCameraTransform(info.transform)
+        let stride = max(1, sampleStride)
+
+        var points: [SIMD3<Float>] = []
+        for v in Swift.stride(from: 0, to: height, by: stride) {
+            for u in Swift.stride(from: 0, to: width, by: stride) {
+                let idx = v * width + u
+                let d = depths[idx]
+                guard d.isFinite, options.validDepthRange.contains(d) else { continue }
+                if let c = confidences?[idx], c < options.minConfidence { continue }
+                points.append(GeometryMath.worldPoint(u: u, v: v, depth: d, intrinsics: k, worldFromCamera: worldFromCamera))
+            }
+        }
+        return points
+    }
+
+    private static func buildUnpooled(
+        frame: DepthFrame,
+        options: PointCloudBuildOptions,
+        correction: (rotation: simd_quatf, translation: SIMD3<Float>)?,
+        into result: inout PointCloudData
+    ) {
         let info = frame.info
         guard let depthData = try? Data(contentsOf: frame.binURL) else { return }
         let width = info.width
@@ -91,7 +175,19 @@ enum PointCloudBuilder {
         let worldFromCamera = GeometryMath.worldFromCameraTransform(info.transform)
         let cameraPos = GeometryMath.cameraPosition(info.transform)
 
-        result.cameraTrajectory.append(cameraPos)
+        // Shading math below (surface normal vs. view direction) is computed
+        // entirely in the frame's own raw/uncorrected space and stays valid
+        // after `correction` is applied at the very end: correction is a
+        // rigid transform (rotation + translation, no scale/shear), and the
+        // angle between two vectors is unchanged when both are rotated
+        // together. Only the final output position (and camera center, for
+        // the trajectory) need the correction applied.
+        @inline(__always) func corrected(_ p: SIMD3<Float>) -> SIMD3<Float> {
+            guard let correction else { return p }
+            return correction.rotation.act(p) + correction.translation
+        }
+
+        result.cameraTrajectory.append(corrected(cameraPos))
 
         @inline(__always) func depthAt(_ uu: Int, _ vv: Int) -> Float? {
             guard uu >= 0, uu < width, vv >= 0, vv < height else { return nil }
@@ -161,6 +257,8 @@ enum PointCloudBuilder {
                     }
                 }
 
+                let outputPoint = corrected(worldPoint)
+
                 var color: SIMD4<Float>
                 switch options.colorMode {
                 case .rgb:
@@ -176,13 +274,13 @@ enum PointCloudBuilder {
                 case .depth:
                     color = Colormap.heat(normalized(d, in: options.depthColorRange))
                 case .height:
-                    color = Colormap.heat(normalized(worldPoint.y, in: options.heightColorRange))
+                    color = Colormap.heat(normalized(outputPoint.y, in: options.heightColorRange))
                 case .confidence:
                     color = Colormap.confidence(confidence ?? 2)
                 }
                 color = SIMD4<Float>(color.x * shadeFactor, color.y * shadeFactor, color.z * shadeFactor, color.w)
 
-                result.positions.append(worldPoint)
+                result.positions.append(outputPoint)
                 result.colors.append(color)
             }
         }

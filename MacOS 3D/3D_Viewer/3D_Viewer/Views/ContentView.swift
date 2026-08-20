@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var pointCloud = PointCloudData()
     @State private var isBuilding = false
     @State private var frameToken = 0
+    @State private var icpStats: (corrected: Int, uncorrected: Int)?
 
     @State private var showFileImporter = false
 
@@ -123,6 +124,35 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Alignment (merged view)") {
+                    Toggle("Re-align frames (ICP)", isOn: $options.useICPRefinement)
+                    Text("Snaps each new frame against everything merged so far instead of trusting ARKit's pose alone — corrects small drift between frames. Only applies to \"All Frames (merged)\".")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Skip fast-motion frames", isOn: Binding(
+                        get: { options.maxRotationRateAtCapture != nil },
+                        set: { options.maxRotationRateAtCapture = $0 ? 1.5 : nil }
+                    ))
+                    if options.maxRotationRateAtCapture != nil {
+                        LabeledContent("Max rotation rate") {
+                            Slider(
+                                value: Binding(
+                                    get: { options.maxRotationRateAtCapture ?? 1.5 },
+                                    set: { options.maxRotationRateAtCapture = $0 }
+                                ),
+                                in: 0.3...4.0
+                            )
+                        }
+                        Text("Drops frames captured while the phone was rotating fast (from motion.csv) — likely motion-blurred. No effect on sessions recorded before motion.csv existed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let icpStats {
+                        LabeledContent("Frames aligned", value: "\(icpStats.corrected) of \(icpStats.corrected + icpStats.uncorrected)")
+                    }
+                }
+
                 Section {
                     Button("Fit Camera to Cloud") { frameToken += 1 }
                 }
@@ -143,6 +173,8 @@ struct ContentView: View {
         .onChange(of: options.useNormalShading) { rebuildPointCloud(refit: false) }
         .onChange(of: options.minConfidence) { rebuildPointCloud(refit: false) }
         .onChange(of: options.edgeDiscontinuityThreshold) { rebuildPointCloud(refit: false) }
+        .onChange(of: options.useICPRefinement) { rebuildPointCloud(refit: false) }
+        .onChange(of: options.maxRotationRateAtCapture) { rebuildPointCloud(refit: false) }
     }
 
     // MARK: Detail
@@ -208,30 +240,35 @@ struct ContentView: View {
             pointCloud = PointCloudData()
             return
         }
-        let framesToProcess: [DepthFrame]
-        switch mode {
-        case .single:
-            if let frame = session.depthFrames[safe: selectedFrameIndex] {
-                framesToProcess = [frame]
-            } else {
-                framesToProcess = []
-            }
-        case .merged:
-            framesToProcess = session.depthFrames
-        }
-
         let opts = options
         isBuilding = true
-        Task.detached(priority: .userInitiated) {
-            var building = PointCloudData()
-            for frame in framesToProcess {
-                PointCloudBuilder.build(frame: frame, options: opts, into: &building)
+
+        switch mode {
+        case .single:
+            let frame = session.depthFrames[safe: selectedFrameIndex]
+            Task.detached(priority: .userInitiated) {
+                var building = PointCloudData()
+                if let frame {
+                    PointCloudBuilder.build(frame: frame, options: opts, into: &building)
+                }
+                let finalResult = building
+                await MainActor.run {
+                    self.pointCloud = finalResult
+                    self.icpStats = nil
+                    self.isBuilding = false
+                    if refit { self.frameToken += 1 }
+                }
             }
-            let finalResult = building
-            await MainActor.run {
-                self.pointCloud = finalResult
-                self.isBuilding = false
-                if refit { self.frameToken += 1 }
+        case .merged:
+            let frames = session.depthFrames
+            Task.detached(priority: .userInitiated) {
+                let (finalResult, aligned, unaligned) = PointCloudBuilder.buildMergedSession(frames: frames, options: opts)
+                await MainActor.run {
+                    self.pointCloud = finalResult
+                    self.icpStats = opts.useICPRefinement ? (aligned, unaligned) : nil
+                    self.isBuilding = false
+                    if refit { self.frameToken += 1 }
+                }
             }
         }
     }

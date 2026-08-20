@@ -22,6 +22,9 @@ enum SessionLoader {
 
         let metadata = try? loadMetadata(directoryURL.appendingPathComponent("metadata.json"))
         let frameRecords = (try? loadFramesCSV(directoryURL.appendingPathComponent("sensors/frames.csv"))) ?? [:]
+        // motion.csv is a newer addition (Phase 3) — absent in older sessions,
+        // which just get no motion-based filtering rather than a load error.
+        let motionSamples = (try? loadMotionCSV(directoryURL.appendingPathComponent("sensors/motion.csv"))) ?? []
 
         let depthDir = directoryURL.appendingPathComponent("depth")
         guard let entries = try? fm.contentsOfDirectory(
@@ -63,7 +66,8 @@ enum SessionLoader {
                 binURL: binURL,
                 confidenceURL: confidenceURL,
                 rgbURL: rgbURL,
-                rgbImageSize: rgbSize
+                rgbImageSize: rgbSize,
+                peakRotationRate: peakRotationRate(around: info.sessionTimeSeconds, in: motionSamples)
             ))
         }
 
@@ -129,5 +133,60 @@ enum SessionLoader {
             result[frameID] = record
         }
         return result
+    }
+
+    /// Parses `sensors/motion.csv` (Core Motion device-motion stream),
+    /// sorted by `sessionTimeSeconds` so `peakRotationRate` can binary-search it.
+    private static func loadMotionCSV(_ url: URL) throws -> [MotionSample] {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard !lines.isEmpty else { return [] }
+        let header = lines.removeFirst().split(separator: ",").map(String.init)
+        var index: [String: Int] = [:]
+        for (i, name) in header.enumerated() { index[name] = i }
+
+        func col(_ name: String, _ fields: [String]) -> String? {
+            guard let i = index[name], i < fields.count else { return nil }
+            let v = fields[i]
+            return v.isEmpty ? nil : v
+        }
+
+        var samples: [MotionSample] = []
+        samples.reserveCapacity(lines.count)
+        for line in lines {
+            let fields = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard let t = col("sessionTimeSeconds", fields).flatMap(Double.init) else { continue }
+            samples.append(MotionSample(
+                sessionTimeSeconds: t,
+                rotationRateX: col("rotationRateX", fields).flatMap(Float.init) ?? 0,
+                rotationRateY: col("rotationRateY", fields).flatMap(Float.init) ?? 0,
+                rotationRateZ: col("rotationRateZ", fields).flatMap(Float.init) ?? 0
+            ))
+        }
+        samples.sort { $0.sessionTimeSeconds < $1.sessionTimeSeconds }
+        return samples
+    }
+
+    /// Peak angular-velocity magnitude within ±`window` seconds of `time`,
+    /// or nil if `samples` is empty or none fall in range.
+    private static func peakRotationRate(around time: Double, in samples: [MotionSample], window: Double = 0.15) -> Float? {
+        guard !samples.isEmpty else { return nil }
+        var lo = 0
+        var hi = samples.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if samples[mid].sessionTimeSeconds < time - window {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        var peak: Float?
+        var i = lo
+        while i < samples.count, samples[i].sessionTimeSeconds <= time + window {
+            peak = max(peak ?? 0, samples[i].rotationRateMagnitude)
+            i += 1
+        }
+        return peak
     }
 }

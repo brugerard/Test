@@ -41,6 +41,10 @@ struct DepthFrame: Identifiable {
     let confidenceURL: URL?
     let rgbURL: URL?
     let rgbImageSize: (width: Int, height: Int)?
+    /// Peak angular velocity magnitude (radians/second) from `motion.csv`
+    /// within a small window around this frame's capture time, or nil if
+    /// the session predates that file. See `MotionSample`.
+    let peakRotationRate: Float?
 
     var id: Int { info.depthFrameID }
 }

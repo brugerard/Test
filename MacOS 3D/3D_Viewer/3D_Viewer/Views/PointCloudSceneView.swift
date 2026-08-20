@@ -2,6 +2,19 @@ import SwiftUI
 import SceneKit
 import simd
 
+/// How the camera frames the cloud on load / "Fit" / mode switch.
+enum CameraFitMode: String, CaseIterable, Identifiable {
+    /// Bounding-box center, viewed from a 3/4 elevated angle — reads as
+    /// correctly oriented at a glance and shows the whole cloud.
+    case elevated = "Elevated"
+    /// Eye level at the average iPhone capture position, looking level
+    /// (no tilt) toward the farthest captured point — approximates what
+    /// standing where you scanned from and looking down the longest sightline
+    /// actually looked like.
+    case eyeLevel = "Eye-level (capture position)"
+    var id: String { rawValue }
+}
+
 /// Wraps an `SCNView` and rebuilds its point-cloud + trajectory geometry
 /// whenever the data or point size changes. Camera orbit/pan/zoom is
 /// SceneKit's own trackpad-driven `allowsCameraControl`.
@@ -11,6 +24,7 @@ struct PointCloudSceneView: NSViewRepresentable {
     var showTrajectory: Bool
     /// Bumped by the caller to force a re-frame of the camera (e.g. "Fit" button).
     var frameToken: Int
+    var fitMode: CameraFitMode
     /// Exposes this view's `SCNView` to the sidebar's discrete zoom/orbit/pan
     /// buttons — see `CameraCommander`.
     var commander: CameraCommander
@@ -60,7 +74,12 @@ struct PointCloudSceneView: NSViewRepresentable {
         }
 
         if refit {
-            fitCamera(view: view, to: pointCloud.positions)
+            switch fitMode {
+            case .elevated:
+                fitCameraElevated(view: view, to: pointCloud.positions)
+            case .eyeLevel:
+                fitCameraEyeLevel(view: view, cloud: pointCloud)
+            }
         }
     }
 
@@ -158,7 +177,34 @@ struct PointCloudSceneView: NSViewRepresentable {
         return SCNNode(geometry: geometry)
     }
 
-    private func fitCamera(view: SCNView, to positions: [SIMD3<Float>]) {
+    /// Finds (or creates) the persistent main-camera node, sized so `zFar`
+    /// comfortably covers a cloud of the given radius.
+    private func cameraNode(in view: SCNView, forRadius radius: Float) -> SCNNode {
+        if let existing = view.scene?.rootNode.childNode(withName: "mainCamera", recursively: false) {
+            return existing
+        }
+        let camera = SCNCamera()
+        camera.zFar = Double(radius) * 20 + 50
+        camera.zNear = 0.01
+        let node = SCNNode()
+        node.name = "mainCamera"
+        node.camera = camera
+        view.scene?.rootNode.addChildNode(node)
+        return node
+    }
+
+    /// Places `node` at `eye` looking at `target`, using an explicit up
+    /// vector. The explicit up/localFront overload avoids `look(at:)`'s
+    /// ambiguous default-up resolution, which was producing an upside-down
+    /// initial view for some sessions — world +Y (ARKit's own
+    /// gravity-aligned "up", per SCIENTIFIC_DATA_FORMAT.md) is always what
+    /// should read as up on screen.
+    private func point(_ node: SCNNode, from eye: SIMD3<Float>, at target: SIMD3<Float>) {
+        node.position = SCNVector3(eye.x, eye.y, eye.z)
+        node.look(at: SCNVector3(target.x, target.y, target.z), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 0, -1))
+    }
+
+    private func fitCameraElevated(view: SCNView, to positions: [SIMD3<Float>]) {
         guard !positions.isEmpty else { return }
         var minP = positions[0]
         var maxP = positions[0]
@@ -169,32 +215,49 @@ struct PointCloudSceneView: NSViewRepresentable {
         let center = (minP + maxP) * 0.5
         let radius = max(simd_distance(minP, maxP) * 0.5, 0.5)
 
-        let cameraNode: SCNNode
-        if let existing = view.scene?.rootNode.childNode(withName: "mainCamera", recursively: false) {
-            cameraNode = existing
-        } else {
-            let camera = SCNCamera()
-            camera.zFar = Double(radius) * 20 + 50
-            camera.zNear = 0.01
-            cameraNode = SCNNode()
-            cameraNode.name = "mainCamera"
-            cameraNode.camera = camera
-            view.scene?.rootNode.addChildNode(cameraNode)
-        }
+        let node = cameraNode(in: view, forRadius: radius)
         // A 3/4 elevated default angle (rather than dead-on from the front)
         // reads as "up the right way" far more reliably than a horizontal
         // eye line, and shows the floor/ceiling relationship immediately.
         let distance = radius * 2.5
         let eyeDirection = simd_normalize(SIMD3<Float>(0.35, 0.55, 0.85))
-        let eye = center + eyeDirection * distance
-        cameraNode.position = SCNVector3(eye.x, eye.y, eye.z)
-        // The explicit up/localFront overload avoids `look(at:)`'s ambiguous
-        // default-up resolution, which was producing an upside-down initial
-        // view for some sessions — world +Y (ARKit's own gravity-aligned
-        // "up", per SCIENTIFIC_DATA_FORMAT.md) is always what should read as
-        // up on screen.
-        cameraNode.look(at: SCNVector3(center.x, center.y, center.z), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 0, -1))
-        view.pointOfView = cameraNode
+        point(node, from: center + eyeDirection * distance, at: center)
+        view.pointOfView = node
+    }
+
+    /// Places the camera at the average recorded iPhone position (roughly
+    /// where you stood while capturing) and levels it off to look straight
+    /// at whichever captured point is farthest away — the longest sightline
+    /// actually available in the scan, viewed the way a person standing
+    /// there and looking straight ahead would have seen it.
+    private func fitCameraEyeLevel(view: SCNView, cloud: PointCloudData) {
+        let positions = cloud.positions
+        guard !positions.isEmpty else { return }
+        let trajectory = cloud.cameraTrajectory.isEmpty ? positions : cloud.cameraTrajectory
+
+        var eye = SIMD3<Float>(repeating: 0)
+        for p in trajectory { eye += p }
+        eye /= Float(trajectory.count)
+
+        var farthest = positions[0]
+        var farthestDistSq: Float = 0
+        for p in positions {
+            let d = simd_distance_squared(p, eye)
+            if d > farthestDistSq { farthestDistSq = d; farthest = p }
+        }
+
+        // Level the sightline: drop any up/down tilt so the view looks
+        // straight ahead, the way eyes at a fixed height naturally would.
+        var direction = farthest - eye
+        direction.y = 0
+        if simd_length_squared(direction) < 1e-6 {
+            direction = SIMD3<Float>(0, 0, -1)
+        }
+        direction = simd_normalize(direction)
+
+        let node = cameraNode(in: view, forRadius: max(sqrt(farthestDistSq), 0.5))
+        point(node, from: eye, at: eye + direction)
+        view.pointOfView = node
     }
 }
 

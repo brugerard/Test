@@ -28,6 +28,7 @@ struct ContentView: View {
 
     @State private var showFileImporter = false
     @StateObject private var cameraCommander = CameraCommander()
+    @State private var cameraFitMode: CameraFitMode = .elevated
 
     var body: some View {
         NavigationSplitView {
@@ -198,6 +199,14 @@ struct ContentView: View {
                 }
 
                 Section("Navigation") {
+                    Picker("Initial view", selection: $cameraFitMode) {
+                        ForEach(CameraFitMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    Text("Eye-level starts from the average iPhone position during capture, looking level (no tilt) toward the farthest point scanned — the longest sightline in the room.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     HStack {
                         Text("Zoom")
                         Spacer()
@@ -246,6 +255,7 @@ struct ContentView: View {
         .onChange(of: options.fusionVoxelSize) { rebuildPointCloud(refit: false) }
         .onChange(of: options.useICPRefinement) { rebuildPointCloud(refit: false) }
         .onChange(of: options.maxRotationRateAtCapture) { rebuildPointCloud(refit: false) }
+        .onChange(of: cameraFitMode) { frameToken += 1 }
     }
 
     // MARK: Detail
@@ -264,6 +274,7 @@ struct ContentView: View {
                     pointSize: pointSize,
                     showTrajectory: showTrajectory,
                     frameToken: frameToken,
+                    fitMode: cameraFitMode,
                     commander: cameraCommander
                 )
                 .ignoresSafeArea()

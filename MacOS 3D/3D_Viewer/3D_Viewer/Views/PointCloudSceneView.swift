@@ -25,9 +25,28 @@ struct PointCloudSceneView: NSViewRepresentable {
     /// Bumped by the caller to force a re-frame of the camera (e.g. "Fit" button).
     var frameToken: Int
     var fitMode: CameraFitMode
+    /// When true, points whose surface faces away from the *current* camera
+    /// (live, updates as you orbit) render as fully transparent, via a
+    /// Metal shader modifier — not baked in at build time, since "facing
+    /// away" depends on where you're currently looking from, not just how
+    /// the frame was originally captured.
+    var hideBackFaces: Bool
     /// Exposes this view's `SCNView` to the sidebar's discrete zoom/orbit/pan
     /// buttons — see `CameraCommander`.
     var commander: CameraCommander
+
+    /// Discards fragments whose supplied per-vertex normal, once transformed
+    /// to view space by SceneKit's own surface stage, points away from the
+    /// camera. View space has the camera at the origin looking down -Z, so a
+    /// normal facing back toward the camera (i.e. toward the viewer) has a
+    /// positive Z component; anything at or past grazing (<= 0) is treated
+    /// as the back side.
+    private static let backFaceCullShader = """
+    #pragma body
+    if (_surface.normal.z < 0.0) {
+        discard_fragment();
+    }
+    """
 
     func makeNSView(context: Context) -> SCNView {
         let view = SCNView()
@@ -62,7 +81,7 @@ struct PointCloudSceneView: NSViewRepresentable {
 
         guard !pointCloud.positions.isEmpty else { return }
 
-        if let node = makePointCloudNode(pointCloud, pointSize: pointSize) {
+        if let node = makePointCloudNode(pointCloud, pointSize: pointSize, hideBackFaces: hideBackFaces) {
             node.name = "pointCloud"
             scene.rootNode.addChildNode(node)
         }
@@ -83,7 +102,7 @@ struct PointCloudSceneView: NSViewRepresentable {
         }
     }
 
-    private func makePointCloudNode(_ cloud: PointCloudData, pointSize: CGFloat) -> SCNNode? {
+    private func makePointCloudNode(_ cloud: PointCloudData, pointSize: CGFloat, hideBackFaces: Bool) -> SCNNode? {
         let positions = cloud.positions
         guard !positions.isEmpty else { return nil }
 
@@ -116,6 +135,23 @@ struct PointCloudSceneView: NSViewRepresentable {
             }()
             : nil
 
+        let normals = cloud.normals
+        let normalSource: SCNGeometrySource? = normals.count == positions.count
+            ? {
+                let normalData = normals.withUnsafeBufferPointer { Data(buffer: $0) }
+                return SCNGeometrySource(
+                    data: normalData,
+                    semantic: .normal,
+                    vectorCount: normals.count,
+                    usesFloatComponents: true,
+                    componentsPerVector: 3,
+                    bytesPerComponent: MemoryLayout<Float>.size,
+                    dataOffset: 0,
+                    dataStride: MemoryLayout<SIMD3<Float>>.stride
+                )
+            }()
+            : nil
+
         var indices = [UInt32](repeating: 0, count: positions.count)
         for i in 0..<positions.count { indices[i] = UInt32(i) }
         let indexData = indices.withUnsafeBufferPointer { Data(buffer: $0) }
@@ -131,11 +167,15 @@ struct PointCloudSceneView: NSViewRepresentable {
 
         var sources = [vertexSource]
         if let colorSource { sources.append(colorSource) }
+        if let normalSource { sources.append(normalSource) }
         let geometry = SCNGeometry(sources: sources, elements: [element])
 
         let material = SCNMaterial()
         material.lightingModel = .constant
         material.isDoubleSided = true
+        if hideBackFaces, normalSource != nil {
+            material.shaderModifiers = [.fragment: Self.backFaceCullShader]
+        }
         geometry.materials = [material]
 
         return SCNNode(geometry: geometry)

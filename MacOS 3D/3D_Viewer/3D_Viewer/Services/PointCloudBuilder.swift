@@ -60,6 +60,14 @@ struct PointCloudBuildOptions {
 struct PointCloudData {
     var positions: [SIMD3<Float>] = []
     var colors: [SIMD4<Float>] = []
+    /// Estimated local surface normal per point (world space), parallel to
+    /// `positions`. Falls back to the direction back toward the capturing
+    /// camera when a real normal couldn't be estimated (e.g. at a depth-map
+    /// border) — a safe default that reads as "facing whoever captured it"
+    /// rather than spuriously culling the point. Used both for the optional
+    /// "shade by surface angle" bake at build time and, live at render time,
+    /// by the "hide back-facing points" GPU shader (see `PointCloudSceneView`).
+    var normals: [SIMD3<Float>] = []
     /// Camera center for each frame contributing to this cloud, in world
     /// coordinates, in frame order — used to draw the trajectory.
     var cameraTrajectory: [SIMD3<Float>] = []
@@ -182,9 +190,12 @@ enum PointCloudBuilder {
             if segments.isEmpty {
                 // No segment info (ICP off, or the whole scan is one piece
                 // with no closed boundary) — fuse the whole cloud at once.
-                let fused = fuseByVoxelAveraging(positions: result.positions, colors: result.colors, voxelSize: voxelSize)
+                let fused = fuseByVoxelAveraging(
+                    positions: result.positions, colors: result.colors, normals: result.normals, voxelSize: voxelSize
+                )
                 result.positions = fused.positions
                 result.colors = fused.colors
+                result.normals = fused.normals
             } else {
                 var fusedResult = PointCloudData()
                 fusedResult.cameraTrajectory = result.cameraTrajectory
@@ -194,11 +205,13 @@ enum PointCloudBuilder {
                     let fused = fuseByVoxelAveraging(
                         positions: Array(result.positions[segment.pointRange]),
                         colors: Array(result.colors[segment.pointRange]),
+                        normals: Array(result.normals[segment.pointRange]),
                         voxelSize: voxelSize
                     )
                     let start = fusedResult.positions.count
                     fusedResult.positions.append(contentsOf: fused.positions)
                     fusedResult.colors.append(contentsOf: fused.colors)
+                    fusedResult.normals.append(contentsOf: fused.normals)
                     fusedSegments.append(MergeSegment(
                         index: segment.index, startFrameID: segment.startFrameID, endFrameID: segment.endFrameID,
                         frameCount: segment.frameCount, pointRange: start..<fusedResult.positions.count
@@ -217,13 +230,14 @@ enum PointCloudBuilder {
     /// inside it — the tractable core of TSDF-style fusion. See
     /// `PointCloudBuildOptions.fusionVoxelSize`.
     private static func fuseByVoxelAveraging(
-        positions: [SIMD3<Float>], colors: [SIMD4<Float>], voxelSize: Float
-    ) -> (positions: [SIMD3<Float>], colors: [SIMD4<Float>]) {
-        guard !positions.isEmpty else { return (positions, colors) }
+        positions: [SIMD3<Float>], colors: [SIMD4<Float>], normals: [SIMD3<Float>], voxelSize: Float
+    ) -> (positions: [SIMD3<Float>], colors: [SIMD4<Float>], normals: [SIMD3<Float>]) {
+        guard !positions.isEmpty else { return (positions, colors, normals) }
 
         struct Accumulator {
             var positionSum: SIMD3<Float>
             var colorSum: SIMD4<Float>
+            var normalSum: SIMD3<Float>
             var count: Float
         }
         // Keeps voxel indices non-negative before packing, comfortably
@@ -245,22 +259,29 @@ enum PointCloudBuilder {
             if var acc = buckets[key] {
                 acc.positionSum += positions[i]
                 acc.colorSum += colors[i]
+                acc.normalSum += normals[i]
                 acc.count += 1
                 buckets[key] = acc
             } else {
-                buckets[key] = Accumulator(positionSum: positions[i], colorSum: colors[i], count: 1)
+                buckets[key] = Accumulator(positionSum: positions[i], colorSum: colors[i], normalSum: normals[i], count: 1)
             }
         }
 
         var outPositions = [SIMD3<Float>]()
         var outColors = [SIMD4<Float>]()
+        var outNormals = [SIMD3<Float>]()
         outPositions.reserveCapacity(buckets.count)
         outColors.reserveCapacity(buckets.count)
+        outNormals.reserveCapacity(buckets.count)
         for accumulator in buckets.values {
             outPositions.append(accumulator.positionSum / accumulator.count)
             outColors.append(accumulator.colorSum / accumulator.count)
+            let normalLenSq = simd_length_squared(accumulator.normalSum)
+            // Averaged normals from very different angles can nearly cancel;
+            // fall back to "up" rather than divide by ~zero.
+            outNormals.append(normalLenSq > 1e-8 ? accumulator.normalSum / normalLenSq.squareRoot() : SIMD3<Float>(0, 1, 0))
         }
-        return (outPositions, outColors)
+        return (outPositions, outColors, outNormals)
     }
 
     /// A fast, sparse pass producing only world-space positions (no color,
@@ -396,35 +417,48 @@ enum PointCloudBuilder {
                 if let dn = dDown, abs(dn - d) > options.edgeDiscontinuityThreshold { continue }
 
                 let worldPoint = worldAt(u, v, d)
+                let viewDir = simd_normalize(cameraPos - worldPoint)
 
-                var shadeFactor: Float = 1
-                if options.useNormalShading {
-                    var tangentX: SIMD3<Float>?
-                    if let dr = dRight {
-                        tangentX = worldAt(u + 1, v, dr) - worldPoint
-                    } else if let dl = depthAt(u - 1, v), abs(dl - d) <= options.edgeDiscontinuityThreshold {
-                        tangentX = worldPoint - worldAt(u - 1, v, dl)
-                    }
-                    var tangentY: SIMD3<Float>?
-                    if let dn = dDown {
-                        tangentY = worldAt(u, v + 1, dn) - worldPoint
-                    } else if let du = depthAt(u, v - 1), abs(du - d) <= options.edgeDiscontinuityThreshold {
-                        tangentY = worldPoint - worldAt(u, v - 1, du)
-                    }
-                    if let tx = tangentX, let ty = tangentY {
-                        let n = simd_cross(tx, ty)
-                        let nLenSq = simd_length_squared(n)
-                        if nLenSq > 1e-12 {
-                            let normal = n / nLenSq.squareRoot()
-                            let viewDir = simd_normalize(cameraPos - worldPoint)
-                            let nDotV = abs(simd_dot(normal, viewDir))
-                            let ambient: Float = 0.35
-                            shadeFactor = ambient + (1 - ambient) * nDotV
-                        }
+                // Estimated local surface normal, from whichever neighbor
+                // pixels are available and depth-continuous. Computed
+                // unconditionally (not just when shading is on): the
+                // back-face culling shader needs it even with flat shading.
+                var tangentX: SIMD3<Float>?
+                if let dr = dRight {
+                    tangentX = worldAt(u + 1, v, dr) - worldPoint
+                } else if let dl = depthAt(u - 1, v), abs(dl - d) <= options.edgeDiscontinuityThreshold {
+                    tangentX = worldPoint - worldAt(u - 1, v, dl)
+                }
+                var tangentY: SIMD3<Float>?
+                if let dn = dDown {
+                    tangentY = worldAt(u, v + 1, dn) - worldPoint
+                } else if let du = depthAt(u, v - 1), abs(du - d) <= options.edgeDiscontinuityThreshold {
+                    tangentY = worldPoint - worldAt(u, v - 1, du)
+                }
+                var normal = viewDir // fallback: "faces whoever captured it"
+                var nDotV: Float = 1
+                if let tx = tangentX, let ty = tangentY {
+                    let n = simd_cross(tx, ty)
+                    let nLenSq = simd_length_squared(n)
+                    if nLenSq > 1e-12 {
+                        let estimated = n / nLenSq.squareRoot()
+                        nDotV = abs(simd_dot(estimated, viewDir))
+                        // Keep the normal oriented toward the capturing
+                        // camera (cross-product sign is arbitrary) so a
+                        // later "facing the current viewer" test means what
+                        // it says, regardless of pixel-grid winding.
+                        normal = simd_dot(estimated, viewDir) < 0 ? -estimated : estimated
                     }
                 }
 
+                var shadeFactor: Float = 1
+                if options.useNormalShading {
+                    let ambient: Float = 0.35
+                    shadeFactor = ambient + (1 - ambient) * nDotV
+                }
+
                 let outputPoint = corrected(worldPoint)
+                let outputNormal = correction.map { $0.rotation.act(normal) } ?? normal
 
                 var color: SIMD4<Float>
                 switch options.colorMode {
@@ -449,6 +483,7 @@ enum PointCloudBuilder {
 
                 result.positions.append(outputPoint)
                 result.colors.append(color)
+                result.normals.append(outputNormal)
             }
         }
     }

@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var options = PointCloudBuildOptions()
     @State private var pointSize: CGFloat = 4
     @State private var showTrajectory = true
+    @State private var hideBackFaces = false
 
     @State private var pointCloud = PointCloudData()
     @State private var isBuilding = false
@@ -105,6 +106,10 @@ struct ContentView: View {
                         Slider(value: $pointSize, in: 1...12)
                     }
                     Toggle("Show camera trajectory", isOn: $showTrajectory)
+                    Toggle("Hide back-facing points", isOn: $hideBackFaces)
+                    Text("Makes points whose surface faces away from the current view fully transparent, live as you orbit — cuts through the \"shell\" of an object instead of showing its outside from every angle.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Sampling") {
@@ -275,6 +280,7 @@ struct ContentView: View {
                     showTrajectory: showTrajectory,
                     frameToken: frameToken,
                     fitMode: cameraFitMode,
+                    hideBackFaces: hideBackFaces,
                     commander: cameraCommander
                 )
                 .ignoresSafeArea()

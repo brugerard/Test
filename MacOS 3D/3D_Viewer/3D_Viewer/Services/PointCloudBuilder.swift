@@ -177,7 +177,7 @@ enum PointCloudBuilder {
                 }
 
                 buildUnpooled(frame: frame, options: options, correction: correction, into: &result)
-                icp?.insert(Array(result.positions[before...]))
+                icp?.insert(Array(result.positions[before...]), normals: Array(result.normals[before...]))
 
                 segmentFrameCount += 1
                 lastFrameID = frame.info.depthFrameID

@@ -68,4 +68,84 @@ enum RigidAlignment {
         let translation = centroidTarget - rotation.act(centroidSource)
         return (rotation, translation)
     }
+
+    /// Point-to-plane ICP step: minimizes, over a small rotation+translation
+    /// [omega; t] (omega as an axis-angle vector, R ~ I + [omega]x), the
+    /// squared distance from each source point to the *plane* through its
+    /// target correspondence (not to the target point itself). This is the
+    /// standard fix for point-to-point Horn alignment being under-constrained
+    /// on flat surfaces: a point can slide freely along a wall and still look
+    /// like a perfect point-to-point match, so that ambiguity never gets
+    /// resolved. Point-to-plane only penalizes the normal-direction
+    /// component of the residual, which is exactly the "how far off the
+    /// surface" error that actually matters for drift correction.
+    ///
+    /// Solves the 6x6 linearized normal-equations system (Low, 2004,
+    /// "Linear Least-Squares Optimization for Point-to-Plane ICP Surface
+    /// Registration") via Gauss-Jordan elimination — no external
+    /// linear-algebra dependency needed for a system this small.
+    static func fitPointToPlane(
+        source: [SIMD3<Float>], target: [SIMD3<Float>], targetNormals: [SIMD3<Float>]
+    ) -> (rotation: simd_quatf, translation: SIMD3<Float>)? {
+        guard source.count == target.count, target.count == targetNormals.count, source.count >= 6 else { return nil }
+
+        var ata = [Float](repeating: 0, count: 36) // 6x6, row-major
+        var atb = [Float](repeating: 0, count: 6)
+
+        for i in 0..<source.count {
+            let p = source[i]
+            let n = targetNormals[i]
+            let c = simd_cross(p, n)
+            let a: [Float] = [c.x, c.y, c.z, n.x, n.y, n.z]
+            let b = simd_dot(n, target[i] - p)
+            for r in 0..<6 {
+                atb[r] += a[r] * b
+                let ar = a[r]
+                guard ar != 0 else { continue }
+                for col in 0..<6 { ata[r * 6 + col] += ar * a[col] }
+            }
+        }
+
+        guard let x = solveSymmetric6x6(ata, atb) else { return nil }
+
+        let omega = SIMD3<Float>(x[0], x[1], x[2])
+        let translation = SIMD3<Float>(x[3], x[4], x[5])
+        let angle = simd_length(omega)
+        let rotation = angle < 1e-8
+            ? simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+            : simd_quatf(angle: angle, axis: omega / angle)
+        return (rotation, translation)
+    }
+
+    /// Gauss-Jordan elimination with partial pivoting for a 6x6 system.
+    /// Returns nil if the system is (near-)singular — e.g. correspondences
+    /// too few or too coplanar/collinear to constrain all 6 degrees of freedom.
+    private static func solveSymmetric6x6(_ a: [Float], _ b: [Float]) -> [Float]? {
+        let n = 6
+        var m = a
+        var rhs = b
+        for col in 0..<n {
+            var pivotRow = col
+            var maxVal = abs(m[col * n + col])
+            for r in (col + 1)..<n {
+                let v = abs(m[r * n + col])
+                if v > maxVal { maxVal = v; pivotRow = r }
+            }
+            guard maxVal > 1e-9 else { return nil }
+            if pivotRow != col {
+                for c in 0..<n { m.swapAt(col * n + c, pivotRow * n + c) }
+                rhs.swapAt(col, pivotRow)
+            }
+            let pivot = m[col * n + col]
+            for r in 0..<n where r != col {
+                let factor = m[r * n + col] / pivot
+                if factor == 0 { continue }
+                for c in 0..<n { m[r * n + c] -= factor * m[col * n + c] }
+                rhs[r] -= factor * rhs[col]
+            }
+        }
+        var x = [Float](repeating: 0, count: n)
+        for i in 0..<n { x[i] = rhs[i] / m[i * n + i] }
+        return x
+    }
 }

@@ -9,6 +9,7 @@ import simd
 private struct VoxelMap {
     let voxelSize: Float
     private var points: [UInt64: SIMD3<Float>] = [:]
+    private var normals: [UInt64: SIMD3<Float>] = [:]
     private var counts: [UInt64: Int32] = [:]
 
     /// Keeps voxel indices non-negative before packing, comfortably covering
@@ -35,32 +36,37 @@ private struct VoxelMap {
         return ux | (uy << 21) | (uz << 42)
     }
 
-    mutating func insert(_ p: SIMD3<Float>) {
+    mutating func insert(_ p: SIMD3<Float>, normal: SIMD3<Float>) {
         let (key, _, _, _) = packedKey(p)
         if let c = counts[key] {
             let n = Float(c)
             points[key] = (points[key]! * n + p) / (n + 1)
+            let normalSum = normals[key]! + normal
+            let lenSq = simd_length_squared(normalSum)
+            normals[key] = lenSq > 1e-8 ? normalSum / lenSq.squareRoot() : normals[key]!
             counts[key] = c + 1
         } else {
             points[key] = p
+            normals[key] = normal
             counts[key] = 1
         }
     }
 
-    /// Nearest map point within `maxDist` of `p`, searching the 3x3x3 block
-    /// of voxels centered on `p`'s own voxel.
-    func nearest(to p: SIMD3<Float>, maxDist: Float) -> SIMD3<Float>? {
+    /// Nearest map point (and its averaged normal) within `maxDist` of `p`,
+    /// searching the 3x3x3 block of voxels centered on `p`'s own voxel.
+    func nearest(to p: SIMD3<Float>, maxDist: Float) -> (position: SIMD3<Float>, normal: SIMD3<Float>)? {
         let (_, ix, iy, iz) = packedKey(p)
-        var best: SIMD3<Float>?
+        var best: (SIMD3<Float>, SIMD3<Float>)?
         var bestDistSq = maxDist * maxDist
         for dx in Int32(-1)...Int32(1) {
             for dy in Int32(-1)...Int32(1) {
                 for dz in Int32(-1)...Int32(1) {
-                    guard let candidate = points[Self.pack(ix + dx, iy + dy, iz + dz)] else { continue }
+                    let key = Self.pack(ix + dx, iy + dy, iz + dz)
+                    guard let candidate = points[key], let normal = normals[key] else { continue }
                     let d = simd_distance_squared(candidate, p)
                     if d < bestDistSq {
                         bestDistSq = d
-                        best = candidate
+                        best = (candidate, normal)
                     }
                 }
             }
@@ -129,18 +135,25 @@ final class IncrementalICPMap {
         for _ in 0..<maxIterations {
             var src: [SIMD3<Float>] = []
             var tgt: [SIMD3<Float>] = []
+            var tgtNormals: [SIMD3<Float>] = []
             src.reserveCapacity(current.count)
             tgt.reserveCapacity(current.count)
+            tgtNormals.reserveCapacity(current.count)
             for p in current {
-                if let n = map.nearest(to: p, maxDist: correspondenceThreshold) {
+                if let match = map.nearest(to: p, maxDist: correspondenceThreshold) {
                     src.append(p)
-                    tgt.append(n)
+                    tgt.append(match.position)
+                    tgtNormals.append(match.normal)
                 }
             }
             lastCorrespondenceCount = src.count
             guard src.count >= minCorrespondenceCount,
                   Float(src.count) / Float(sample.count) >= minCorrespondenceFraction,
-                  let fit = RigidAlignment.fit(source: src, target: tgt)
+                  // Point-to-plane: only penalizes the surface-normal
+                  // component of the residual, so it isn't fooled by a
+                  // point sliding freely along a flat wall/floor the way
+                  // point-to-point matching is — see RigidAlignment's doc.
+                  let fit = RigidAlignment.fitPointToPlane(source: src, target: tgt, targetNormals: tgtNormals)
             else { break }
 
             current = current.map { fit.rotation.act($0) + fit.translation }
@@ -165,9 +178,17 @@ final class IncrementalICPMap {
         return (totalRotation, totalTranslation)
     }
 
-    func insert(_ points: [SIMD3<Float>]) {
-        for p in Self.subsample(points, target: insertSampleTarget) {
-            map.insert(p)
+    func insert(_ points: [SIMD3<Float>], normals: [SIMD3<Float>]) {
+        guard points.count == normals.count else { return }
+        guard points.count > insertSampleTarget else {
+            for i in 0..<points.count { map.insert(points[i], normal: normals[i]) }
+            return
+        }
+        let step = max(1, points.count / insertSampleTarget)
+        var i = 0
+        while i < points.count {
+            map.insert(points[i], normal: normals[i])
+            i += step
         }
     }
 
